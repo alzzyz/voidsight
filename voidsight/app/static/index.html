@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>voidsight</title>
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #141922;
+    --panel-2: #1b2230;
+    --line: #263041;
+    --text: #e8edf5;
+    --dim: #8996ab;
+    --accent: #f5c56b;
+    --accent-dim: #6b5426;
+    --live: #4ade80;
+    --stale: #94a3b8;
+    --warn: #fbbf24;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; }
+  h1 span { color: var(--accent); }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; color: var(--dim); font-size: 13px; margin-left: auto; }
+  .meta b { color: var(--text); font-weight: 500; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--stale); }
+  .dot.on { background: var(--live); box-shadow: 0 0 8px var(--live); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  main { padding: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card {
+    position: relative; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .card.best { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 6px 24px -12px var(--accent); }
+  .card.unmatched { border-style: dashed; }
+  .ribbon {
+    position: absolute; top: -1px; right: -1px; background: var(--accent); color: #17130a;
+    font-size: 10px; font-weight: 700; letter-spacing: .12em; padding: 3px 9px; border-radius: 0 10px 0 8px;
+  }
+  .name { font-size: 17px; font-weight: 600; line-height: 1.25; min-height: 2.5em; padding-right: 42px; }
+  .card.unmatched .name { color: var(--dim); font-style: italic; font-weight: 400; }
+  .price { display: flex; align-items: baseline; gap: 8px; }
+  .plat { font-size: 42px; font-weight: 650; line-height: 1; letter-spacing: -.02em; }
+  .plat.none { font-size: 22px; color: var(--dim); font-weight: 400; }
+  .unit { font-size: 15px; color: var(--dim); }
+  .offers { display: flex; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    font-size: 11px; color: var(--dim); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+  }
+  .rows { display: grid; gap: 5px; font-size: 13px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; }
+  .row span:first-child { color: var(--dim); }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge {
+    font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid currentColor; border-radius: 4px; padding: 2px 6px; opacity: .9;
+  }
+  .badge.vaulted { color: var(--accent); }
+  .badge.live { color: var(--live); }
+  .badge.cached { color: var(--stale); }
+  .badge.warn { color: var(--warn); }
+  .badge.bad { color: var(--bad); }
+
+  .settings {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 20px;
+  }
+  .settings[hidden] { display: none; }
+  .settings h2 { font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 14px; }
+  .fields { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: var(--dim); }
+  select, input[type=number] {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 10px; font: inherit; font-size: 13px; min-width: 170px;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--accent); }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 12px; }
+  .hint code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  .saved { color: var(--live); font-size: 12px; }
+
+  .empty { color: var(--dim); text-align: center; padding: 80px 20px; }
+  .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; color: var(--text); }
+  .history { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 16px; }
+  .history h2 { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 0 0 10px; }
+  .hrow { display: flex; gap: 14px; font-size: 12px; color: var(--dim); padding: 5px 0; border-bottom: 1px solid var(--panel-2); }
+  .hrow time { color: var(--stale); flex-shrink: 0; }
+  .hrow .items { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>void<span>sight</span></h1>
+  <button id="scan">Scan now</button>
+  <button id="toggle-settings">Settings</button>
+  <div class="meta">
+    <span><span class="dot" id="dot"></span> <b id="conn">connecting</b></span>
+    <span>theme <b id="theme">—</b></span>
+    <span>source <b id="source">—</b></span>
+    <span>read <b id="confidence">—</b></span>
+    <span>relic <b id="relic">—</b></span>
+    <span id="at">—</span>
+  </div>
+</header>
+
+<main>
+  <section class="settings" id="settings" hidden>
+    <h2>Configuration</h2>
+    <div class="fields">
+      <div class="field">
+        <label for="theme-select">Warframe UI theme</label>
+        <select id="theme-select"></select>
+      </div>
+      <div class="field">
+        <label for="scale-input">Interface scale</label>
+        <input id="scale-input" type="number" min="0.5" max="2" step="0.05">
+      </div>
+      <div class="field">
+        <label for="prefer-select">Highlight best by</label>
+        <select id="prefer-select">
+          <option value="platinum">Platinum</option>
+          <option value="ducats">Ducats</option>
+        </select>
+      </div>
+      <div class="field">
+        <button id="save-settings">Save</button>
+      </div>
+      <span id="save-status" class="saved"></span>
+    </div>
+    <div class="hint">
+      Set these to match Warframe's own Interface options — they decide which pixels count as
+      reward text and where the reward panel sits. Saved to <code id="config-path"></code>.
+    </div>
+  </section>
+
+  <div id="cards" class="cards"></div>
+  <div class="empty" id="empty">
+    Waiting for a relic reward screen. Crack a relic, or press <code>Scan now</code>.
+  </div>
+  <div class="history" id="history" hidden>
+    <h2>Recent scans</h2>
+    <div id="hrows"></div>
+  </div>
+</main>
+
+<script>
+const el = (id) => document.getElementById(id);
+const fmtPlat = (v) => v == null ? null : (Number.isInteger(v) ? v : v.toFixed(1));
+
+function card(reward, isBest) {
+  const node = document.createElement("div");
+  node.className = "card" + (isBest ? " best" : "") + (reward.matched ? "" : " unmatched");
+
+  const badges = [];
+  if (reward.matched) {
+    badges.push(reward.live
+      ? '<span class="badge live">live</span>'
+      : '<span class="badge cached">cached</span>');
+    if (reward.vaulted) badges.push('<span class="badge vaulted">vaulted</span>');
+    if (reward.tradeable === false) badges.push('<span class="badge cached">untradeable</span>');
+    if (reward.ambiguous) badges.push('<span class="badge warn">uncertain</span>');
+  } else {
+    badges.push('<span class="badge bad">not recognised</span>');
+  }
+
+  const plat = fmtPlat(reward.platinum);
+  const offers = (reward.offers || []).slice(1, 5)
+    .map((p) => `<span class="chip">${p}p</span>`).join("");
+
+  node.innerHTML = `
+    ${isBest ? '<div class="ribbon">best</div>' : ""}
+    <div class="name">${escapeHtml(reward.name)}</div>
+    <div>
+      <div class="price">
+        ${plat == null
+          ? '<span class="plat none">no price</span>'
+          : `<span class="plat">${plat}</span><span class="unit">plat${reward.live ? " · lowest" : " · avg"}</span>`}
+      </div>
+      ${offers ? `<div class="offers" style="margin-top:8px">${offers}</div>` : ""}
+    </div>
+    <div class="rows">
+      ${reward.ducats != null ? `<div class="row"><span>Ducats</span><span>${reward.ducats}${
+        reward.ducats_per_platinum != null ? ` · ${reward.ducats_per_platinum}/p` : ""}</span></div>` : ""}
+      ${reward.average != null ? `<div class="row"><span>Average</span><span>${fmtPlat(reward.average)}p${
+        reward.volume != null ? ` · ${reward.volume} sold today` : ""}</span></div>` : ""}
+      ${!reward.matched && reward.raw_text
+        ? `<div class="row"><span>OCR</span><span>${escapeHtml(reward.raw_text)}</span></div>` : ""}
+      ${reward.error ? `<div class="row"><span>Note</span><span>${escapeHtml(reward.error)}</span></div>` : ""}
+    </div>
+    <div class="badges">${badges.join("")}</div>`;
+  return node;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text == null ? "" : String(text);
+  return div.innerHTML;
+}
+
+function render(payload) {
+  if (!payload) return;
+  el("theme").textContent = payload.theme || "—";
+  el("source").textContent = payload.source || "—";
+  el("relic").textContent = payload.relic || "—";
+  el("confidence").textContent = payload.confidence != null
+    ? Math.round(payload.confidence * 100) + "%" : "—";
+  el("at").textContent = payload.at ? new Date(payload.at).toLocaleTimeString() : "—";
+
+  const cards = el("cards");
+  cards.innerHTML = "";
+  const rewards = payload.rewards || [];
+  rewards.forEach((reward, index) => cards.appendChild(card(reward, index === payload.best)));
+  el("empty").hidden = rewards.length > 0;
+  if (!rewards.length && payload.reason) {
+    el("empty").innerHTML = `Nothing found in the last frame — ${escapeHtml(payload.reason)}.`;
+  }
+}
+
+function renderHistory(entries) {
+  const rows = el("hrows");
+  rows.innerHTML = "";
+  const usable = (entries || []).filter((entry) => (entry.rewards || []).length);
+  el("history").hidden = usable.length < 2;
+  usable.slice(0, 8).forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "hrow";
+    const names = (entry.rewards || []).map((r) => r.name).join(" · ");
+    row.innerHTML = `<time>${new Date(entry.at).toLocaleTimeString()}</time>
+      <span class="items">${escapeHtml(names)}</span>`;
+    rows.appendChild(row);
+  });
+}
+
+let history = [];
+function connect() {
+  const source = new EventSource("/api/events");
+  source.onopen = () => { el("dot").classList.add("on"); el("conn").textContent = "connected"; };
+  source.onerror = () => { el("dot").classList.remove("on"); el("conn").textContent = "reconnecting"; };
+  source.onmessage = (event) => {
+    const payload = JSON.parse(event.data);
+    render(payload);
+    history = [payload, ...history.filter((h) => h.at !== payload.at)].slice(0, 20);
+    renderHistory(history);
+  };
+}
+
+const settings = {
+  async load() {
+    const data = await (await fetch("/api/settings")).json();
+    const themes = el("theme-select");
+    themes.innerHTML = '<option value="">Detect automatically</option>';
+    (data.themes || []).forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      themes.appendChild(option);
+    });
+    themes.value = data.theme || "";
+    el("scale-input").value = data.ui_scale;
+    el("prefer-select").value = data.prefer;
+    el("config-path").textContent = data.config_path;
+    if (data.theme) el("theme").textContent = data.theme;
+  },
+  async save() {
+    const status = el("save-status");
+    status.textContent = "";
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        theme: el("theme-select").value,
+        ui_scale: parseFloat(el("scale-input").value),
+        prefer: el("prefer-select").value,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      status.style.color = "var(--bad)";
+      status.textContent = body.detail || "Could not save.";
+      return;
+    }
+    const data = await response.json();
+    el("theme").textContent = data.theme || "auto";
+    status.style.color = "var(--live)";
+    status.textContent = "Saved";
+    setTimeout(() => { status.textContent = ""; }, 2500);
+  },
+};
+
+el("toggle-settings").addEventListener("click", () => {
+  const panel = el("settings");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) settings.load();
+});
+el("save-settings").addEventListener("click", () => settings.save());
+
+el("scan").addEventListener("click", async () => {
+  const button = el("scan");
+  button.disabled = true;
+  button.textContent = "Scanning…";
+  try {
+    const response = await fetch("/api/scan", { method: "POST" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      el("empty").textContent = body.detail || "Scan failed.";
+      el("empty").hidden = false;
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Scan now";
+  }
+});
+
+settings.load();
+fetch("/api/state").then((r) => r.json()).then((state) => {
+  if (state.theme) el("theme").textContent = state.theme;
+  if (state.backend) el("source").textContent = state.backend;
+  history = state.history || [];
+  render(state.latest);
+  renderHistory(history);
+}).finally(connect);
+</script>
+</body>
+</html>
