@@ -1,0 +1,502 @@
+"""Command line entry point."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from pathlib import Path
+
+from voidsight import __version__
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="voidsight", description=__doc__)
+    parser.add_argument("--version", action="version", version=f"voidsight {__version__}")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    update = sub.add_parser("update-data", help="refresh the item, relic and price feeds")
+    update.add_argument(
+        "--offline",
+        action="store_true",
+        help="only report what is already cached",
+    )
+    update.set_defaults(func=_update_data)
+
+    scan = sub.add_parser("scan", help="read the rewards in a screenshot")
+    scan.add_argument("image", type=Path, help="screenshot of the reward screen")
+    scan.add_argument("--debug-dir", type=Path, help="write intermediate images here")
+    scan.add_argument("--theme", help="pin the Warframe UI theme instead of detecting it")
+    scan.add_argument("--ui-scale", type=float, help="Warframe interface scale, if not 1.0")
+    scan.add_argument("--relic", help='narrow matching to one relic\'s drops, e.g. "Axi A1"')
+    scan.add_argument("--save-theme", action="store_true", help="remember the detected theme")
+    scan.set_defaults(func=_scan)
+
+    serve = sub.add_parser("serve", help="run the second-screen web app")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, help="default 8765, or whatever config says")
+    serve.add_argument("--backend", choices=["auto", "x11", "replay"], help="frame source")
+    serve.add_argument("--log-path", type=Path, help="path to EE.log (default: auto-discover)")
+    serve.add_argument(
+        "--no-watch",
+        action="store_true",
+        help="do not follow EE.log; scan only when asked",
+    )
+    serve.add_argument("--replay-dir", type=Path, help="directory of screenshots to serve")
+    serve.add_argument("--theme", help="pin the Warframe UI theme")
+    serve.add_argument("--open", action="store_true", help="open the page in a browser")
+    serve.set_defaults(func=_serve)
+
+    probe = sub.add_parser("probe", help="report which capture backends work here")
+    probe.add_argument("--window", help="window name to look for (default: Warframe)")
+    probe.add_argument("--save-to", type=Path, help="write captured frames here as PNGs")
+    probe.set_defaults(func=_probe)
+
+    watch = sub.add_parser("watch", help="follow EE.log and print rewards as they drop")
+    watch.add_argument("--backend", choices=["auto", "x11", "replay"], help="frame source")
+    watch.add_argument("--replay-dir", type=Path, help="directory of screenshots to serve")
+    watch.add_argument("--log-path", type=Path, help="path to EE.log (default: auto-discover)")
+    watch.add_argument("--theme", help="pin the Warframe UI theme")
+    watch.set_defaults(func=_watch)
+
+    app = sub.add_parser("app", help="run the desktop client")
+    app.add_argument("--backend", choices=["auto", "x11", "replay"], help="frame source")
+    app.add_argument("--replay-dir", type=Path, help="directory of screenshots to serve")
+    app.add_argument("--log-path", type=Path, help="path to EE.log (default: auto-discover)")
+    app.add_argument("--theme", help="pin the Warframe UI theme")
+    app.add_argument(
+        "--no-watch", action="store_true", help="do not follow EE.log; scan only when asked"
+    )
+    app.add_argument(
+        "--overlay",
+        action="store_true",
+        help="draw reward prices over the game (needs Borderless Fullscreen)",
+    )
+    app.add_argument(
+        "--wait-for-game",
+        action="store_true",
+        help="start hidden and show the window once Warframe is detected",
+    )
+    app.set_defaults(func=_app)
+
+    launch = sub.add_parser(
+        "launch",
+        help="run the client alongside a game command (for Steam launch options)",
+    )
+    launch.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="the game command, after --. Steam substitutes this as %%command%%",
+    )
+    launch.set_defaults(func=_launch)
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    return args.func(args)
+
+
+def _update_data(args: argparse.Namespace) -> int:
+    from voidsight.data import catalog as catalog_module
+    from voidsight.data import sources
+
+    cat = catalog_module.load(refresh=not args.offline, offline=args.offline)
+
+    tradeable = sum(1 for part in cat.parts.values() if part.tradeable)
+    priced = sum(1 for part in cat.parts.values() if part.avg_plat is not None)
+    slugged = sum(1 for part in cat.parts.values() if part.slug)
+    eras = sorted({relic.era for relic in cat.relics.values()})
+
+    print(f"cache: {sources.cache_dir()}")
+    print(
+        f"parts: {len(cat.parts)} ({tradeable} tradeable, "
+        f"{slugged} with market slug, {priced} priced)"
+    )
+    print(f"relics: {len(cat.relics)} across {len(eras)} eras ({', '.join(eras)})")
+    print(f"match keys: {len(cat.match_keys)}")
+
+    missing = _missing_reward_names(cat)
+    if missing:
+        print(f"warning: {len(missing)} relic reward names are not in the item table:")
+        for name in sorted(missing)[:10]:
+            print(f"  - {name}")
+    return 0
+
+
+def _scan(args: argparse.Namespace) -> int:
+    import cv2
+
+    from voidsight.config import Config
+    from voidsight.data import catalog as catalog_module
+    from voidsight.vision import ocr, pipeline
+
+    if not args.image.exists():
+        print(f"no such file: {args.image}", file=sys.stderr)
+        return 2
+    if not ocr.TesseractReader.available():
+        print("tesseract is not installed; install it and try again", file=sys.stderr)
+        return 2
+
+    image = cv2.imread(str(args.image), cv2.IMREAD_COLOR)
+    if image is None:
+        print(f"could not read {args.image} as an image", file=sys.stderr)
+        return 2
+    frame = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    config = Config.load()
+    if args.theme:
+        config.theme = args.theme
+    if args.ui_scale:
+        config.ui_scale = args.ui_scale
+
+    catalog = catalog_module.load(offline=True)
+    relic = catalog.relic(args.relic) if args.relic else None
+    if args.relic and relic is None:
+        print(f"unknown relic {args.relic!r}", file=sys.stderr)
+        return 2
+
+    scanner = pipeline.Scanner(catalog, config=config, persist=args.save_theme)
+    result = scanner.scan(frame, relic=relic, debug_dir=args.debug_dir)
+
+    theme_name = result.theme.name if result.theme else "?"
+    print(f"{frame.shape[1]}x{frame.shape[0]}  theme={theme_name}", end="")
+    print(f"  confidence={result.confidence:.2f}" + (f"  relic={relic.name}" if relic else ""))
+    if not result.rewards:
+        print(f"no rewards found ({result.notes.get('reason', 'unknown reason')})")
+        return 1
+
+    for reward in result.rewards:
+        part = reward.part
+        if part is None:
+            print(f"  [{reward.index}] ? {reward.raw_text!r} (best {reward.match.score:.0f})")
+            continue
+        plat = f"{part.avg_plat:.0f}p avg" if part.avg_plat is not None else "no price"
+        flags = "".join(
+            [" [vaulted]" if part.vaulted else "", " [untradeable]" if not part.tradeable else ""]
+        )
+        print(f"  [{reward.index}] {part.display_name}  {plat}  {part.ducats} ducats{flags}")
+    return 0 if result.ok else 1
+
+
+def _probe(args: argparse.Namespace) -> int:
+    from voidsight.capture import probe
+
+    print(probe.describe_session())
+    print()
+    results = probe.probe_all(args.window, args.save_to)
+    for result in results:
+        print(f"  {result.symbol} {result.backend:8} {result.detail}")
+        for extra in result.extras[:12]:
+            print(f"          window: {extra}")
+
+    if any(result.available for result in results):
+        working = next(result.backend for result in results if result.available)
+        print(f"\nusable backend: {working}")
+        return 0
+    print(
+        "\nNo backend captured a frame. If Warframe is running, this is the case"
+        "\nwhere the xdg-desktop-portal screencast backend is needed — report the"
+        "\noutput above so it can be built against what your compositor allows."
+    )
+    return 1
+
+
+def _build_backend(args: argparse.Namespace, config) -> object | None:
+    """Pick a capture backend from flags, config, then availability."""
+    from voidsight.capture.base import CaptureError
+    from voidsight.capture.replay import ReplayBackend
+
+    choice = getattr(args, "backend", None) or config.backend
+    replay_dir = getattr(args, "replay_dir", None)
+
+    if replay_dir or choice == "replay":
+        return ReplayBackend(replay_dir or Path.cwd())
+    if choice in ("auto", "x11"):
+        from voidsight.capture.x11 import X11Backend
+
+        try:
+            return X11Backend()
+        except CaptureError as exc:
+            if choice == "x11":
+                raise
+            print(f"x11 backend unavailable ({exc})", file=sys.stderr)
+            return None
+    return None
+
+
+def _watch(args: argparse.Namespace) -> int:
+    from voidsight.app.server import Session
+    from voidsight.app.state import ScanStore
+    from voidsight.capture.base import CaptureError, RingBuffer
+    from voidsight.config import Config
+    from voidsight.data import catalog as catalog_module
+    from voidsight.live import LiveRunner
+    from voidsight.pricing.market import MarketClient
+    from voidsight.trigger.eelog import find_log
+    from voidsight.vision import ocr, pipeline
+
+    if not ocr.TesseractReader.available():
+        print("tesseract is not installed; install it and try again", file=sys.stderr)
+        return 2
+
+    config = Config.load()
+    if args.theme:
+        config.theme = args.theme
+
+    log_path = find_log(args.log_path or config.log_path)
+    if log_path is None:
+        print(
+            "could not find EE.log — pass --log-path, or start Warframe once so"
+            " Proton creates it",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        backend = _build_backend(args, config)
+    except CaptureError as exc:
+        print(f"capture backend: {exc}", file=sys.stderr)
+        return 2
+    if backend is None:
+        print("no capture backend available; run `voidsight probe`", file=sys.stderr)
+        return 2
+
+    catalog = catalog_module.load(offline=True)
+    session = Session(
+        scanner=pipeline.Scanner(catalog, config=config),
+        market=MarketClient(platform=config.platform),
+        config=config,
+        store=ScanStore(),
+        backend=backend,
+        buffer=RingBuffer(),
+    )
+    runner = LiveRunner(session, log_path, on_result=_print_payload)
+
+    print(f"watching {log_path}\ncapturing via {backend.name}; crack a relic (ctrl-c to stop)")
+    runner.start()
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        runner.stop()
+        session.market.close()
+        backend.close()
+    return 0
+
+
+def _app(args: argparse.Namespace) -> int:
+    from voidsight.app.server import Session
+    from voidsight.app.state import ScanStore
+    from voidsight.capture.base import CaptureError, RingBuffer
+    from voidsight.config import Config
+    from voidsight.data import catalog as catalog_module
+    from voidsight.instance import SingleInstance
+    from voidsight.pricing.market import MarketClient
+    from voidsight.trigger.eelog import find_log
+    from voidsight.vision import ocr, pipeline
+
+    try:
+        from voidsight.ui.main import run
+    except ImportError:
+        print(
+            "the desktop client needs PySide6: uv sync --extra desktop",
+            file=sys.stderr,
+        )
+        return 2
+    if not ocr.TesseractReader.available():
+        print("tesseract is not installed; install it and try again", file=sys.stderr)
+        return 2
+
+    config = Config.load()
+    if args.theme:
+        config.theme = args.theme
+    if args.overlay:
+        config.overlay = True
+
+    # A missing capture backend is not fatal here: the window still opens, and
+    # screenshots can be scanned from the File menu. Only the live capture and
+    # automatic triggering are unavailable, which the client says on its face.
+    try:
+        backend = _build_backend(args, config)
+    except CaptureError as exc:
+        print(f"capture backend: {exc}", file=sys.stderr)
+        backend = None
+
+    catalog = catalog_module.load(offline=True)
+    session = Session(
+        scanner=pipeline.Scanner(catalog, config=config),
+        market=MarketClient(platform=config.platform),
+        config=config,
+        store=ScanStore(),
+        backend=backend,
+        buffer=RingBuffer(),
+    )
+    log_path = None if args.no_watch else find_log(args.log_path or config.log_path)
+
+    # Both startup hooks can be enabled at once; two clients tailing one log and
+    # capturing one screen is worse than one, so the second stands aside.
+    lock = SingleInstance()
+    if not lock.acquire():
+        holder = lock.holder_pid()
+        where = f" (pid {holder})" if holder else ""
+        print(f"a voidsight client is already running{where}", file=sys.stderr)
+        return 0
+
+    try:
+        return run(session, log_path, wait_for_game=args.wait_for_game)
+    finally:
+        lock.release()
+        session.market.close()
+        if backend is not None:
+            backend.close()
+
+
+def _launch(args: argparse.Namespace) -> int:
+    """Start the client, run the game, then stop the client.
+
+    Meant for Steam launch options: `voidsight launch -- %command%`. Steam
+    waits on this process, which waits on the game, so the client's lifetime
+    matches the session exactly and nothing is left running afterwards.
+    """
+    import subprocess
+
+    command = [part for part in args.command if part != "--"]
+    if not command:
+        print(
+            "nothing to launch. Use this as a Steam launch option:\n"
+            f"  {startup_module().steam_launch_command()}",
+            file=sys.stderr,
+        )
+        return 2
+
+    client = None
+    try:
+        client = subprocess.Popen(
+            [sys.argv[0], "app", "--wait-for-game"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        # The game must start even if we cannot.
+        print(f"could not start the voidsight client: {exc}", file=sys.stderr)
+
+    try:
+        return subprocess.call(command)
+    finally:
+        if client is not None and client.poll() is None:
+            client.terminate()
+            try:
+                client.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                client.kill()
+
+
+def startup_module():
+    from voidsight import startup
+
+    return startup
+
+
+def _print_payload(payload: dict) -> None:
+    """Print a scan as it happens. Flushed, so piping to a file stays live."""
+    best = payload.get("best")
+    header = f"[{payload['at'][11:19]}] {payload.get('relic') or 'rewards'}"
+    lines = [f"{header}  ({payload['confidence']:.0%} confident)"]
+    for index, reward in enumerate(payload["rewards"]):
+        marker = "->" if index == best else "  "
+        plat = reward["platinum"]
+        price = f"{plat:g}p" if plat is not None else "no price"
+        ducats = f"{reward['ducats']}d" if reward["ducats"] is not None else ""
+        lines.append(f"  {marker} {reward['name']:<36} {price:>9}  {ducats}")
+    print("\n".join(lines), flush=True)
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from voidsight.app.server import Session, create_app
+    from voidsight.app.state import ScanStore
+    from voidsight.capture.base import CaptureError, RingBuffer
+    from voidsight.config import Config
+    from voidsight.data import catalog as catalog_module
+    from voidsight.pricing.market import MarketClient
+    from voidsight.vision import ocr, pipeline
+
+    if not ocr.TesseractReader.available():
+        print("tesseract is not installed; install it and try again", file=sys.stderr)
+        return 2
+
+    config = Config.load()
+    if args.theme:
+        config.theme = args.theme
+    if args.backend:
+        config.backend = args.backend
+    port = args.port or config.port
+
+    # A missing capture backend is not fatal here: the window still opens, and
+    # screenshots can be scanned from the File menu. Only the live capture and
+    # automatic triggering are unavailable, which the client says on its face.
+    try:
+        backend = _build_backend(args, config)
+    except CaptureError as exc:
+        print(f"capture backend: {exc}", file=sys.stderr)
+        backend = None
+
+    catalog = catalog_module.load(offline=True)
+    session = Session(
+        scanner=pipeline.Scanner(catalog, config=config),
+        market=MarketClient(platform=config.platform),
+        config=config,
+        store=ScanStore(),
+        backend=backend,
+        buffer=RingBuffer(),
+    )
+    app = create_app(session)
+
+    runner = None
+    if not args.no_watch:
+        from voidsight.live import LiveRunner
+        from voidsight.trigger.eelog import find_log
+
+        log_path = find_log(args.log_path or config.log_path)
+        if log_path is None:
+            print("EE.log not found; running without automatic triggers", file=sys.stderr)
+        else:
+            runner = LiveRunner(session, log_path)
+            runner.start()
+            print(f"watching {log_path}")
+
+    url = f"http://{args.host}:{port}"
+    print(f"voidsight serving on {url}  (backend: {backend.name})")
+    if args.open:
+        import webbrowser
+
+        webbrowser.open(url)
+    try:
+        uvicorn.run(app, host=args.host, port=port, log_level="warning")
+    finally:
+        if runner is not None:
+            runner.stop()
+        session.market.close()
+        backend.close()
+    return 0
+
+
+def _missing_reward_names(cat) -> set[str]:
+    """Relic rewards with no matching part. Should be empty; a canary on feed drift."""
+    return {
+        reward.part_name
+        for relic in cat.relics.values()
+        for reward in relic.rewards
+        if cat.lookup(reward.part_name) is None
+    }
+
+
+if __name__ == "__main__":
+    sys.exit(main())
