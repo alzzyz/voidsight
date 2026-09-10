@@ -1,0 +1,23 @@
+voidsight
+Copyright 2026 voidsight contributors
+
+This product includes software design derived from WFInfo
+(https://github.com/WFCD/WFinfo), Copyright the Warframe Community Developers,
+licensed under the Apache License, Version 2.0.
+
+Specifically, the following are derived from WFInfo:
+  * The Warframe UI theme colour table and the colour-threshold approach used to
+    isolate reward text (voidsight/vision/theme.py).
+  * The reward-screen crop geometry constants and the row/column analysis used to
+    locate reward names (voidsight/vision/locate.py).
+  * The EE.log trigger line strings used to detect the reward screen
+    (voidsight/trigger/eelog.py).
+
+This product consumes, but does not include, data from:
+  * warframe.market (https://warframe.market) via its public v2 HTTP API.
+  * WarframeStatus (https://api.warframestat.us), maintained by the Warframe
+    Community Developers.
+
+Warframe is a registered trademark of Digital Extremes Ltd. This project is
+unofficial and is not affiliated with, endorsed by, or sponsored by Digital
+Extremes. It is likewise unaffiliated with AlecaFrame or Overwolf.
