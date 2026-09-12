@@ -36,6 +36,18 @@ def catalog() -> C.Catalog:
         pytest.skip("no cached data; run `voidsight update-data` first")
 
 
+@pytest.fixture(scope="module")
+def relic_catalog(catalog: C.Catalog) -> C.Catalog:
+    """The cached catalog, for tests that need its relic drop tables.
+
+    A cache fetched while the WFInfo host was down has items but no relics, and
+    a test asking for one then fails in a way that says nothing about the code.
+    """
+    if not catalog.relics:
+        pytest.skip("cached data has no relic table; run `voidsight update-data` while online")
+    return catalog
+
+
 @pytest.fixture
 def small_catalog() -> C.Catalog:
     return C.build(FILTERED_ITEMS, PRICES, MARKET_ITEMS)
@@ -167,7 +179,8 @@ class TestMatch:
         # Against the full ~750-name catalog, this is too mangled to place.
         assert not M.match("Xl1U5 QR8ME CH#5Z1Z", catalog).ok
 
-    def test_relic_constraint_rescues_a_garbled_read(self, catalog: C.Catalog):
+    def test_relic_constraint_rescues_a_garbled_read(self, relic_catalog: C.Catalog):
+        catalog = relic_catalog
         garbled = "NlDU5 PR1ME CHA5S1S BLUEPR1NT"
         relic = catalog.relic("Meso N9") or next(iter(catalog.relics.values()))
         candidates = [reward.part_name for reward in relic.rewards]
@@ -221,7 +234,8 @@ class TestPipeline:
         result = pipeline.scan(frame, catalog, ui_theme=theme_module.get("Vitruvian"))
         assert [reward.part.display_name for reward in result.rewards] == REWARDS[:count]
 
-    def test_relic_narrows_the_search(self, catalog: C.Catalog):
+    def test_relic_narrows_the_search(self, relic_catalog: C.Catalog):
+        catalog = relic_catalog
         relic = catalog.relic("Axi A1")
         frame = render_reward_screen(
             [reward.part_name for reward in relic.rewards][:4], seed=9

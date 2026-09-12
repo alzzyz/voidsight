@@ -54,6 +54,10 @@ def probe_x11(window_name: str | None = None) -> ProbeResult:
 
     try:
         windows = [str(info) for info in backend.windows()]
+        # The backend itself waits for the game's window rather than refusing to
+        # start without one; a probe is asking about right now, so it reports it.
+        if backend.window_info is None:
+            return ProbeResult("x11", False, backend.missing_window_message, extras=windows)
         frame = backend.grab()
         if frame is None:
             return ProbeResult(

@@ -39,6 +39,15 @@ class Bridge(QObject):
         """Called from the live runner's thread. Qt queues it to the UI thread."""
         self.scanned.emit(payload)
 
+    def report_problem(self, message: str) -> None:
+        """Called from the live runner's thread when a trigger produced nothing.
+
+        A trigger that reads no rewards is otherwise indistinguishable from no
+        trigger at all: the window simply never changes. Saying so is the
+        difference between a broken setup and an app that looks asleep.
+        """
+        self.failed.emit(message)
+
     @Slot()
     def scan_now(self) -> None:
         self.busy.emit(True)

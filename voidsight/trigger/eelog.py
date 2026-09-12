@@ -169,7 +169,13 @@ class LogWatcher:
 
     def run(self) -> None:
         while not self._stop.is_set():
-            self.poll()
+            try:
+                self.poll()
+            except Exception:  # pragma: no cover - belt and braces
+                # This thread is the only thing that notices a reward screen.
+                # If it dies the app goes quiet for the rest of the session
+                # without saying anything, so it does not get to die.
+                log.exception("log watcher poll failed; continuing")
             self._stop.wait(self.interval)
 
     def poll(self) -> list[RewardEvent]:
@@ -177,7 +183,11 @@ class LogWatcher:
         events = [self._event_for(line) for line in self.read_new() if self._is_trigger(line)]
         events = [event for event in events if event is not None]
         for event in events:
-            self.on_reward(event)
+            try:
+                self.on_reward(event)
+            except Exception:
+                # One failed scan must not cost every later trigger.
+                log.exception("handling a reward trigger failed")
         return events
 
     def read_new(self) -> list[str]:

@@ -188,3 +188,56 @@ class TestSingleInstance:
         # A companion app must not refuse to start because of a lock file.
         lock = SingleInstance(tmp_path / "missing" / "deeper" / "voidsight.lock")
         assert lock.acquire()
+
+
+class TestLogFile:
+    """A client started by a hook has no terminal, so it needs somewhere to write.
+
+    The first live run produced no diagnostics at all: the autostart entry's
+    stderr goes nowhere, and the reason capture was dead was printed to it.
+    """
+
+    def test_log_file_follows_xdg_state_home(self, tmp_path, monkeypatch):
+        from voidsight.config import log_file_path
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        assert log_file_path() == tmp_path / "voidsight" / "voidsight.log"
+
+    def test_logging_writes_to_it(self, tmp_path, monkeypatch):
+        import logging
+
+        from voidsight import cli
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        root = logging.getLogger()
+        existing = list(root.handlers)
+        try:
+            root.handlers = []
+            cli._setup_logging(verbose=False, to_file=True)
+            logging.getLogger("voidsight.test").info("capture backend went missing")
+            for handler in root.handlers:
+                handler.flush()
+            written = (tmp_path / "voidsight" / "voidsight.log").read_text()
+        finally:
+            for handler in root.handlers:
+                handler.close()
+            root.handlers = existing
+        assert "capture backend went missing" in written
+
+    def test_no_log_file_leaves_nothing_behind(self, tmp_path, monkeypatch):
+        import logging
+
+        from voidsight import cli
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        root = logging.getLogger()
+        existing = list(root.handlers)
+        try:
+            root.handlers = []
+            cli._setup_logging(verbose=True, to_file=False)
+            logging.getLogger("voidsight.test").debug("quiet please")
+        finally:
+            for handler in root.handlers:
+                handler.close()
+            root.handlers = existing
+        assert not (tmp_path / "voidsight").exists()

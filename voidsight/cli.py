@@ -10,11 +10,18 @@ from pathlib import Path
 
 from voidsight import __version__
 
+log = logging.getLogger(__name__)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="voidsight", description=__doc__)
     parser.add_argument("--version", action="version", version=f"voidsight {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    parser.add_argument(
+        "--no-log-file",
+        action="store_true",
+        help="do not write ~/.local/state/voidsight/voidsight.log",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     update = sub.add_parser("update-data", help="refresh the item, relic and price feeds")
@@ -93,11 +100,52 @@ def main(argv: list[str] | None = None) -> int:
     launch.set_defaults(func=_launch)
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    _setup_logging(verbose=args.verbose, to_file=not args.no_log_file)
+    log.debug("voidsight %s: %s", __version__, " ".join(sys.argv[1:]))
     return args.func(args)
+
+
+def _setup_logging(*, verbose: bool, to_file: bool) -> None:
+    """Console logging, plus a log file unless it is turned off.
+
+    The file is what makes a client started by a login hook or a Steam launch
+    option debuggable at all: its stderr goes nowhere, so the first live run on
+    real hardware left no trace of why it had no capture backend.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    from voidsight.config import log_file_path
+
+    level = logging.DEBUG if verbose else logging.INFO
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Idempotent: a second call replaces our handlers rather than doubling every
+    # line, and leaves anyone else's (a test runner's, say) alone.
+    for existing in list(root.handlers):
+        if getattr(existing, "_voidsight", False):
+            root.removeHandler(existing)
+            existing.close()
+
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    console._voidsight = True
+    root.addHandler(console)
+    # Third-party debug logging is per-request noise that would bury ours.
+    for noisy in ("httpx", "httpcore", "PIL", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    if not to_file:
+        return
+    path = log_file_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    except OSError as exc:  # a read-only home must not stop the app
+        log.warning("not logging to %s: %s", path, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler._voidsight = True
+    root.addHandler(handler)
 
 
 def _load_catalog():
@@ -270,6 +318,7 @@ def _build_backend(args: argparse.Namespace, config) -> object | None:
         except CaptureError as exc:
             if choice == "x11":
                 raise
+            log.warning("x11 backend unavailable: %s", exc)
             print(f"x11 backend unavailable ({exc})", file=sys.stderr)
             return None
     return None
@@ -399,13 +448,29 @@ def _app(args: argparse.Namespace) -> int:
         print(f"a voidsight client is already running{where}", file=sys.stderr)
         return 0
 
+    log.info(
+        "client starting: backend=%s, EE.log=%s, theme=%s",
+        backend.name if backend else "none",
+        log_path or "not found",
+        config.theme or "detect",
+    )
+
+    def make_backend():
+        """Another go at capture, for the window to call once the game is up."""
+        try:
+            return _build_backend(args, config)
+        except CaptureError as exc:
+            log.warning("capture backend: %s", exc)
+            return None
+
     try:
-        return run(session, log_path, wait_for_game=args.wait_for_game)
+        return run(session, log_path, wait_for_game=args.wait_for_game, make_backend=make_backend)
     finally:
         lock.release()
         session.market.close()
-        if backend is not None:
-            backend.close()
+        # session.backend, not the local one: the window may have replaced it.
+        if session.backend is not None:
+            session.backend.close()
 
 
 def _launch(args: argparse.Namespace) -> int:

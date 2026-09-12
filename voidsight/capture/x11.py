@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,6 +23,10 @@ from voidsight.capture.base import CaptureError, Frame
 log = logging.getLogger(__name__)
 
 DEFAULT_WINDOW_NAMES = ("warframe", "gamescope")
+#: How often to go looking for the game's window while we do not have it. The
+#: capture loop asks for a frame several times a second and walking the X tree
+#: that often would be wasteful — a game starting is a human-timescale event.
+WINDOW_SEARCH_INTERVAL = 2.0
 
 
 @dataclass(frozen=True)
@@ -52,7 +57,19 @@ def find_window_title(window_name: str = "Warframe") -> str | None:
 
 
 class X11Backend:
-    """Reads the contents of a named X11 window."""
+    """Reads the contents of a named X11 window.
+
+    The window is looked for lazily rather than demanded at construction. Both
+    startup hooks create the client *before* the game exists — a login entry by
+    minutes, a Steam launch option by seconds — so a backend that gave up when
+    it found no window would stay dead for the whole session while the header
+    cheerfully reported the game as running. The same lookup re-acquires the
+    window if the game is restarted underneath us, which a long-lived client
+    started at login will outlive several of.
+
+    Construction still fails if there is no X display at all: that is a property
+    of the machine rather than of what happens to be running on it.
+    """
 
     name = "x11"
 
@@ -76,10 +93,12 @@ class X11Backend:
             raise CaptureError(f"cannot open the X display: {exc}") from exc
 
         self._root = self._display.screen().root
-        self._wanted = (window_name.lower(),) if window_name else DEFAULT_WINDOW_NAMES
+        self.wanted = (window_name.lower(),) if window_name else DEFAULT_WINDOW_NAMES
         self._window = None
         self.window_info: WindowInfo | None = None
-        self._find_window()
+        self._next_search = 0.0
+        self._announced: int | None = None
+        self.find_window()
 
     def close(self) -> None:
         try:
@@ -119,28 +138,53 @@ class X11Backend:
             yield child
             yield from self._walk(child, depth + 1)
 
-    def _find_window(self) -> None:
+    @property
+    def missing_window_message(self) -> str:
+        return "no window matching " + "/".join(self.wanted) + " — is Warframe running?"
+
+    def find_window(self, *, force: bool = False) -> WindowInfo | None:
+        """Look for the game's window. Safe to call often; rate-limited inside."""
+        now = time.monotonic()
+        if not force and now < self._next_search:
+            return self.window_info
+        self._next_search = now + WINDOW_SEARCH_INTERVAL
+
         for info in self.windows():
             lowered = info.name.lower()
-            if any(wanted in lowered for wanted in self._wanted):
+            if any(wanted in lowered for wanted in self.wanted):
+                log.debug("found X11 window %s", info)
                 self._window = self._display.create_resource_object("window", info.id)
                 self.window_info = info
-                log.info("capturing X11 window %s", info)
-                return
-        raise CaptureError(
-            "no window matching " + "/".join(self._wanted) + " — is Warframe running?"
-        )
+                return info
+
+        if self.window_info is not None:
+            log.info("the %s window is gone; watching for it to come back", self.window_info.name)
+            self._announced = None
+        self._window = None
+        self.window_info = None
+        return None
 
     def grab(self) -> Frame | None:
-        if self._window is None:
+        if self._window is None and self.find_window() is None:
             return None
+        # Announced here rather than on discovery: game detection builds a
+        # throwaway backend every few seconds just to read a window title, and
+        # it would otherwise narrate that to the log file all day.
+        if self.window_info is not None and self.window_info.id != self._announced:
+            log.info("capturing X11 window %s", self.window_info)
+            self._announced = self.window_info.id
         try:
             geometry = self._window.get_geometry()
             raw = self._window.get_image(
                 0, 0, geometry.width, geometry.height, 2, 0xFFFFFFFF  # 2 = ZPixmap
             )
         except Exception as exc:
-            log.warning("X11 capture failed: %s", exc)
+            # Nearly always the window going away mid-session — the game closed,
+            # or Proton replaced it. Forget it so the next grab finds its
+            # successor instead of retrying a dead id forever.
+            log.warning("X11 capture failed (%s); looking for the window again", exc)
+            self._window = None
+            self.window_info = None
             return None
 
         data = raw.data

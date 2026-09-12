@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +45,14 @@ class MainWindow(QMainWindow):
         log_path: Path | None = None,
         *,
         wait_for_game: bool = False,
+        make_backend: Callable[[], Any] | None = None,
     ) -> None:
         super().__init__()
         self.session = session
         self.bridge = bridge
         self.log_path = log_path
         self.wait_for_game = wait_for_game
+        self.make_backend = make_backend
         self.setWindowTitle("voidsight")
         # Resolve first: a hand-edited config should not leave the window at
         # Qt's arbitrary default.
@@ -154,6 +157,12 @@ class MainWindow(QMainWindow):
         self.game_state = game.detect(self.log_path)
         self.header.set_game_state(self.game_state)
 
+        # Both startup hooks run the client before the game, so the first look
+        # for something to capture can legitimately come up empty. Ask again
+        # when the game appears instead of sitting out the rest of the session.
+        if self.game_state.running and not was_running and self.session.backend is None:
+            self._acquire_backend()
+
         # Started from a login hook: follow the game in and out, so the window
         # is present exactly while there is something to read.
         if self.wait_for_game and self.game_state.running != was_running:
@@ -167,6 +176,22 @@ class MainWindow(QMainWindow):
             watching=self.log_path is not None,
             has_backend=self.session.backend is not None,
         )
+
+    def _acquire_backend(self) -> None:
+        """Try once more for a capture backend, now that the game is up."""
+        if self.make_backend is None:
+            return
+        try:
+            backend = self.make_backend()
+        except Exception as exc:  # a backend that will not start is not fatal
+            log.warning("still no capture backend: %s", exc)
+            return
+        if backend is None:
+            return
+        log.info("capture backend %s started once the game appeared", backend.name)
+        self.session.backend = backend
+        self.settings.refresh_source()
+        self.statusBar().showMessage(f"Capturing via {backend.name}")
 
     def _on_settings_changed(self) -> None:
         self.refresh_game_state()
@@ -205,6 +230,7 @@ def run(
     log_path: Path | None = None,
     *,
     wait_for_game: bool = False,
+    make_backend: Callable[[], Any] | None = None,
 ) -> int:
     """Start the client. Owns the live runner for as long as the window is open."""
     # Before QApplication: the platform plugin is chosen at construction, and it
@@ -221,7 +247,9 @@ def run(
         application.setFont(font)
 
     bridge = Bridge(session)
-    window = MainWindow(session, bridge, log_path, wait_for_game=wait_for_game)
+    window = MainWindow(
+        session, bridge, log_path, wait_for_game=wait_for_game, make_backend=make_backend
+    )
 
     if limitation := platform.overlay_limitation(application.platformName()):
         if session.config.overlay:
@@ -232,7 +260,9 @@ def run(
     if log_path is not None:
         from voidsight.live import LiveRunner
 
-        runner = LiveRunner(session, log_path, on_result=bridge.publish)
+        runner = LiveRunner(
+            session, log_path, on_result=bridge.publish, on_problem=bridge.report_problem
+        )
         runner.start()
         window.statusBar().showMessage(f"Watching {log_path}")
     elif session.backend is not None:

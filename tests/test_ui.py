@@ -30,6 +30,20 @@ def qt_app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def no_game(monkeypatch):
+    """Detection must not consult the machine the tests run on.
+
+    Several of these assert what the window looks like with no game around, and
+    this project is developed on a machine that sometimes has Warframe open —
+    which made the suite fail for reasons nothing to do with the code. Tests
+    that want a running game override this after the window is built.
+    """
+    from voidsight import game
+
+    monkeypatch.setattr(game, "detect", lambda *a, **k: game.GameState(running=False))
+
+
 @pytest.fixture
 def catalog() -> C.Catalog:
     return C.build(FILTERED_ITEMS, PRICES, MARKET_ITEMS)
@@ -893,6 +907,156 @@ class TestClientSize:
         window = MainWindow(session, Bridge(session))
         assert window.size().width() == 1120
         assert window.header.client_size.value() == "M"
+
+
+class TestSaveFrameButton:
+    """'Is it even seeing the game?' must be answerable from the window."""
+
+    def view(self, session, qt_app):
+        return SettingsView(session)
+
+    def test_says_so_when_there_is_nothing_to_grab(self, qt_app, session: Session):
+        view = self.view(session, qt_app)
+        assert session.backend is None
+        assert not view.save_frame_button.isEnabled()
+        view._save_frame()
+        assert "no capture backend" in view.debug_status.text().lower()
+
+    def test_saves_a_frame_and_reports_its_size(self, qt_app, session: Session, tmp_path,
+                                                monkeypatch):
+        import numpy as np
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+        class FakeBackend:
+            name = "x11"
+
+            def grab(self):
+                return np.full((90, 160, 3), 120, dtype=np.uint8)
+
+            def close(self):
+                pass
+
+        session.backend = FakeBackend()
+        view = self.view(session, qt_app)
+        view._save_frame()
+        text = view.debug_status.text()
+        assert "160x90" in text
+        assert (tmp_path / "voidsight" / "last-frame.png").exists()
+        assert "black" not in text
+
+    def test_an_all_black_frame_is_called_out(self, qt_app, session: Session, tmp_path,
+                                              monkeypatch):
+        import numpy as np
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+        class BlackBackend:
+            name = "x11"
+
+            def grab(self):
+                return np.zeros((90, 160, 3), dtype=np.uint8)
+
+            def close(self):
+                pass
+
+        session.backend = BlackBackend()
+        view = self.view(session, qt_app)
+        view._save_frame()
+        # A black frame is the documented compositor failure and must not be
+        # reported as a successful capture.
+        assert "all black" in view.debug_status.text()
+
+    def test_a_backend_with_no_frame_is_not_an_error_dialog(self, qt_app, session: Session):
+        class EmptyBackend:
+            name = "x11"
+
+            def grab(self):
+                return None
+
+            def close(self):
+                pass
+
+        session.backend = EmptyBackend()
+        view = self.view(session, qt_app)
+        view._save_frame()
+        assert "no frame" in view.debug_status.text()
+
+
+class TestLateBackend:
+    """The client outlives the game's absence, so capture must catch up.
+
+    Both startup hooks create the window before Warframe exists: a login entry
+    by minutes, a Steam launch option by seconds. A backend chosen once at
+    startup is therefore chosen at the worst possible moment.
+    """
+
+    def window(self, session, made):
+        from voidsight.ui.bridge import Bridge
+
+        return MainWindow(session, Bridge(session), make_backend=lambda: made.pop(0))
+
+    def test_asks_again_when_the_game_appears(self, qt_app, session: Session, monkeypatch):
+        from voidsight import game
+
+        class FakeBackend:
+            name = "x11"
+
+            def grab(self):
+                return None
+
+            def close(self):
+                pass
+
+        backend = FakeBackend()
+        window = self.window(session, [backend])
+        # Nothing to capture from at startup, which is not the end of it.
+        assert session.backend is None
+
+        monkeypatch.setattr(
+            game, "detect", lambda *a, **k: game.GameState(running=True, signals=("process 1",))
+        )
+        window.refresh_game_state()
+        assert session.backend is backend
+        assert window.settings.scan_button.isEnabled()
+
+    def test_does_not_ask_twice_for_the_same_game(self, qt_app, session: Session, monkeypatch):
+        from voidsight import game
+
+        calls: list[int] = []
+
+        def make():
+            calls.append(1)
+            return None
+
+        from voidsight.ui.bridge import Bridge
+
+        window = MainWindow(session, Bridge(session), make_backend=make)
+        monkeypatch.setattr(
+            game, "detect", lambda *a, **k: game.GameState(running=True, signals=("process 1",))
+        )
+        window.refresh_game_state()
+        window.refresh_game_state()
+        window.refresh_game_state()
+        # Once, on the transition — not five times a second for the whole session.
+        assert len(calls) == 1
+
+    def test_a_backend_that_will_not_start_is_not_fatal(
+        self, qt_app, session: Session, monkeypatch
+    ):
+        from voidsight import game
+        from voidsight.ui.bridge import Bridge
+
+        def explode():
+            raise RuntimeError("no display")
+
+        window = MainWindow(session, Bridge(session), make_backend=explode)
+        monkeypatch.setattr(
+            game, "detect", lambda *a, **k: game.GameState(running=True, signals=("process 1",))
+        )
+        window.refresh_game_state()
+        assert session.backend is None
+        assert not window.settings.scan_button.isEnabled()
 
 
 class TestWaitForGame:

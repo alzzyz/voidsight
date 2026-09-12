@@ -68,6 +68,17 @@ def config_path() -> Path:
     return config_dir() / "config.toml"
 
 
+def state_dir() -> Path:
+    """Where the log file goes. Not the config directory: this is ours, not the
+    user's, and nobody should have to scroll past it to edit a setting."""
+    base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    return Path(base) / "voidsight"
+
+
+def log_file_path() -> Path:
+    return state_dir() / "voidsight.log"
+
+
 @dataclass
 class Config:
     #: Warframe UI theme name, or None to work it out from the next scan.

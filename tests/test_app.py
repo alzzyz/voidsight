@@ -111,6 +111,59 @@ class TestRingBuffer:
         assert RingBuffer().newest() is None
 
 
+class TestRingBufferConcurrency:
+    """One thread fills it while another searches it. That is its whole job.
+
+    Iterating the deque directly raised "deque mutated during iteration" the
+    first time a real capture loop ran alongside a real trigger, and because the
+    exception landed in the log-watcher thread it took the trigger down with it
+    for the rest of the session.
+    """
+
+    def test_searching_while_frames_land(self):
+        import threading
+
+        import numpy as np
+
+        from voidsight.capture.base import RingBuffer
+
+        buffer = RingBuffer(seconds=60.0)
+        for _ in range(20):
+            buffer.add(np.zeros((2, 2, 3), dtype=np.uint8))
+
+        stop = threading.Event()
+        errors: list[Exception] = []
+
+        def fill():
+            while not stop.is_set():
+                buffer.add(np.zeros((2, 2, 3), dtype=np.uint8))
+
+        writer = threading.Thread(target=fill, daemon=True)
+        writer.start()
+        try:
+            for _ in range(200):
+                try:
+                    list(buffer.recent())
+                except Exception as exc:  # the bug, if it is back
+                    errors.append(exc)
+                    break
+        finally:
+            stop.set()
+            writer.join(timeout=2.0)
+        assert not errors
+
+    def test_snapshot_does_not_change_underneath_a_reader(self):
+        import numpy as np
+
+        from voidsight.capture.base import RingBuffer
+
+        buffer = RingBuffer(seconds=60.0)
+        buffer.add(np.zeros((2, 2, 3), dtype=np.uint8))
+        shots = buffer.snapshot()
+        buffer.add(np.zeros((2, 2, 3), dtype=np.uint8))
+        assert len(shots) == 1
+
+
 class TestReplayBackend:
     def test_serves_images_in_order_and_loops(self, shots):
         backend = ReplayBackend(shots)

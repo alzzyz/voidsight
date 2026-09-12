@@ -145,3 +145,30 @@ class TestLogWatcher:
         finally:
             watcher.stop()
         assert len(events) == 1
+
+
+class TestWatcherSurvival:
+    """The watcher thread is the only thing that notices a reward screen."""
+
+    def test_a_failing_callback_does_not_stop_later_triggers(self, tmp_path):
+        seen: list[str] = []
+
+        def explode_once(event):
+            seen.append(event.line)
+            if len(seen) == 1:
+                raise RuntimeError("scan blew up")
+
+        log_path = tmp_path / "EE.log"
+        log_path.write_text("")
+        watcher = eelog.LogWatcher(log_path, explode_once)
+
+        log_path.write_text("Script [Info]: ProjectionRewardChoice.lua: Got rewards\n")
+        watcher.poll()
+        log_path.write_text(
+            "Script [Info]: ProjectionRewardChoice.lua: Got rewards\n"
+            "Script [Info]: ProjectionRewardChoice.lua: Got rewards\n"
+        )
+        watcher.poll()
+        # The second trigger still arrived, which it would not have if the
+        # first exception had propagated out of the thread.
+        assert len(seen) == 2

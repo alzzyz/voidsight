@@ -144,10 +144,44 @@ actual font — and the reward panel's position has only been checked against 19
 Run `voidsight scan <shot> --debug-dir /tmp/dbg` and look at `overlay.png`: if the drawn box does
 not contain the reward names, set `panel_region` and the rest follows.
 
+## When nothing happens
+
+The client is quiet by design, so a broken setup and an uneventful mission look identical. Three
+things to look at, in order:
+
+1. **The log file.** Every run writes `~/.local/state/voidsight/voidsight.log` — the only record a
+   client started by a login hook or a Steam launch option leaves, since its stderr goes nowhere.
+   Put `-v` before the subcommand (`voidsight -v app`) for debug detail, or `--no-log-file` to turn
+   the file off. A reward screen that was seen but produced nothing is reported there and in the
+   window's status bar, which is the difference between a broken setup and a quiet mission.
+2. **Settings › Debug › Save what voidsight sees**, or `voidsight probe` from a terminal. Both
+   answer the first question — is it looking at the game at all? The button writes
+   `~/.local/state/voidsight/last-frame.png` and reports the frame's size and mean brightness,
+   because an all-black frame (a compositor refusing to hand the window over) is otherwise
+   indistinguishable from a working capture from inside the app.
+3. **The game's own log**, which is what triggers a scan. It survives the session, so it can be
+   checked after the fact:
+
+   ```sh
+   grep -c "Got rewards" \
+     ~/.steam/steam/steamapps/compatdata/230410/pfx/drive_c/users/steamuser/AppData/Local/Warframe/EE.log
+   ```
+
+   A non-zero count means the trigger fired and the problem is downstream of it.
+
+A reward screen that triggered but would not read is written to
+`~/.local/state/voidsight/unread/` (last three kept). That file is the whole diagnosis:
+`voidsight scan <it> --debug-dir /tmp/dbg` shows the crop, the band it chose and what each column
+OCR'd, and `--theme <name>` tries it under one specific mask.
+
+Capture is acquired lazily, because the client starts before the game does — minutes before it with
+a login entry, seconds with a Steam launch option. It keeps looking for the game's window instead of
+giving up on the session, and finds it again if the game is restarted.
+
 ## Development
 
 ```sh
-uv run --group dev pytest      # 124 tests, no network
+uv run --group dev pytest      # 361 tests, no network
 uv run --group dev ruff check .
 ```
 

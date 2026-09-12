@@ -346,6 +346,14 @@ class SettingsView(QWidget):
         self.open_button.setIcon(icons.get("screenshot", style.active().muted))
         self.open_button.clicked.connect(self._pick_file)
         row.addWidget(self.open_button)
+
+        # "Is it even seeing the game?" is the first question when nothing
+        # happens, and until this button it could not be answered without
+        # running a mission and hoping.
+        self.save_frame_button = QPushButton("  Save what voidsight sees")
+        self.save_frame_button.setIcon(icons.get("screenshot", style.active().muted))
+        self.save_frame_button.clicked.connect(self._save_frame)
+        row.addWidget(self.save_frame_button)
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -377,6 +385,50 @@ class SettingsView(QWidget):
         if path:
             self.file_requested.emit(path)
 
+    def _save_frame(self) -> None:
+        """Grab one frame and write it out, saying what it actually contains.
+
+        A black frame and a working capture are indistinguishable from inside
+        the app, so this reports the brightness as well as the path: a frame
+        the compositor refused to hand over comes back all zeros.
+        """
+        import cv2
+        import numpy as np
+
+        from voidsight.config import state_dir
+
+        backend = self.session.backend
+        if backend is None:
+            self.set_debug_status("No capture backend to grab a frame from.", error=True)
+            return
+        try:
+            frame = backend.grab()
+            if frame is None:
+                self.set_debug_status(
+                    f"The {backend.name} backend returned no frame — is the game running?",
+                    error=True,
+                )
+                return
+            directory = state_dir()
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / "last-frame.png"
+            cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        except Exception as exc:
+            self.set_debug_status(f"Could not save a frame: {exc}", error=True)
+            return
+
+        height, width = frame.shape[:2]
+        brightness = float(np.mean(frame))
+        verdict = (
+            "all black — the compositor is not letting us read this window"
+            if brightness < 1.0
+            else f"mean brightness {brightness:.0f}/255"
+        )
+        self.set_debug_status(
+            f"Saved {width}x{height} from {backend.name} to {path} ({verdict})",
+            error=brightness < 1.0,
+        )
+
     def reload(self) -> None:
         """Show what is currently in effect."""
         scanner = self.session.scanner
@@ -404,8 +456,13 @@ class SettingsView(QWidget):
 
         self._refresh_startup()
 
+        self.refresh_source()
+
+    def refresh_source(self) -> None:
+        """Say where frames come from. Called again if a backend arrives late."""
         backend = self.session.backend
         self.scan_button.setEnabled(backend is not None)
+        self.save_frame_button.setEnabled(backend is not None)
         self.source_label.setText(
             f"Frame source: {backend.name}" if backend else "No capture backend on this machine."
         )
@@ -423,6 +480,7 @@ class SettingsView(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         self.scan_button.setEnabled(not busy and self.session.backend is not None)
+        self.save_frame_button.setEnabled(not busy and self.session.backend is not None)
         self.open_button.setEnabled(not busy)
         self.scan_button.setText("  Scanning…" if busy else "  Scan now")
 
