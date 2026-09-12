@@ -154,3 +154,102 @@ def test_every_relic_reward_resolves_to_a_part(cat: C.Catalog):
         if cat.lookup(reward.part_name) is None
     ]
     assert unresolved == []
+
+
+class TestDegradedCatalog:
+    """One host being down should not stop the app starting.
+
+    WFInfo's item table, relic tables and price feed all live on
+    api.warframestat.us. When it is unreachable — as it was, returning 502, on
+    the day this was written — warframe.market's own list still names every
+    prime part, which is what OCR matches against.
+    """
+
+    def market_payload(self):
+        return {
+            "data": [
+                {
+                    "id": "1", "slug": "nikana_prime_blueprint", "ducats": 25,
+                    "gameRef": "/Lotus/Types/Recipes/Weapons/PrimeNikanaBlueprint",
+                    "tags": ["weapon", "prime", "melee", "blueprint"],
+                    "i18n": {"en": {"name": "Nikana Prime Blueprint", "icon": "a.png",
+                                    "subIcon": "b.png"}},
+                },
+                {
+                    "id": "2", "slug": "nikana_prime_set", "ducats": 190,
+                    "tags": ["weapon", "prime", "set", "melee"],
+                    "i18n": {"en": {"name": "Nikana Prime Set"}},
+                },
+                {
+                    "id": "3", "slug": "braton_vandal_stock",
+                    "tags": ["weapon", "component"],
+                    "i18n": {"en": {"name": "Braton Vandal Stock"}},
+                },
+            ]
+        }
+
+    def test_builds_prime_parts_from_the_market_alone(self):
+        cat = C.build_from_market(self.market_payload())
+        assert [part.display_name for part in cat.parts.values()] == ["Nikana Prime Blueprint"]
+
+    def test_a_set_is_not_a_reward(self):
+        # Sets are tradeable but never appear on a reward screen.
+        cat = C.build_from_market(self.market_payload())
+        assert cat.lookup("Nikana Prime Set") is None
+
+    def test_non_prime_items_are_skipped(self):
+        cat = C.build_from_market(self.market_payload())
+        assert cat.lookup("Braton Vandal Stock") is None
+
+    def test_carries_what_pricing_and_artwork_need(self):
+        part = C.build_from_market(self.market_payload()).lookup("Nikana Prime Blueprint")
+        assert part.slug == "nikana_prime_blueprint"
+        assert part.ducats == 25
+        assert part.icon == "a.png"
+        assert part.game_ref.endswith("PrimeNikanaBlueprint")
+
+    def test_announces_what_is_missing(self):
+        cat = C.build_from_market(self.market_payload())
+        assert cat.degraded
+        assert "filtered_items" in cat.missing
+        assert cat.relics == {}
+
+    def test_absent_data_is_left_absent(self):
+        # Vaulted defaults to False, which shows no badge — an absence, not a
+        # claim that the item is unvaulted. Prices are None, not zero.
+        part = C.build_from_market(self.market_payload()).lookup("Nikana Prime Blueprint")
+        assert part.avg_plat is None
+        assert part.volume_today is None
+
+    def test_a_full_catalog_is_not_degraded(self):
+        cat = C.build(FILTERED_ITEMS, PRICES, MARKET_ITEMS)
+        assert not cat.degraded
+        assert cat.missing == ()
+
+    def test_load_falls_back_when_wfinfo_is_down(self, monkeypatch):
+        import httpx
+
+        from voidsight.data import sources
+
+        def fake_load(feed, **kwargs):
+            if feed is sources.MARKET_ITEMS:
+                return self.market_payload()
+            raise httpx.HTTPError("502 Bad Gateway")
+
+        monkeypatch.setattr(sources, "load", fake_load)
+        cat = C.load()
+        assert cat.degraded
+        assert cat.lookup("Nikana Prime Blueprint") is not None
+
+    def test_losing_the_market_too_is_fatal(self, monkeypatch):
+        import httpx
+
+        from voidsight.data import sources
+
+        def fake_load(feed, **kwargs):
+            raise httpx.HTTPError("502 Bad Gateway")
+
+        monkeypatch.setattr(sources, "load", fake_load)
+        # Nothing to match against at all; the caller must hear about it.
+        with pytest.raises(httpx.HTTPError):
+            C.load()

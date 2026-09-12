@@ -64,8 +64,21 @@ For live capture on Linux, also install the X11 extra: `uv sync --extra x11`.
 The desktop client is the main way to run this:
 
 ```sh
-uv sync --extra desktop
+uv sync --extra desktop     # on Linux this includes X11 capture
 uv run voidsight app
+```
+
+The first run downloads the item, relic and price data by itself. Those feeds come from two
+hosts, and voidsight starts on whichever it can reach: if WFInfo's data on `api.warframestat.us`
+is down, it falls back to warframe.market alone and says so in the header. Reward reading and live
+prices still work; relic drop tables, vaulted flags and average prices wait for that host to
+return. Tesseract is a system
+package and has to come from your distribution:
+
+```sh
+sudo pacman -S tesseract tesseract-data-eng     # Arch
+sudo apt install tesseract-ocr                  # Debian/Ubuntu
+sudo dnf install tesseract                      # Fedora
 ```
 
 Three tabs — Rewards, Mastery (not built yet), Settings — and it follows `EE.log` on its own. Qt

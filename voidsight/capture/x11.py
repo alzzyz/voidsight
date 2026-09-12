@@ -66,7 +66,8 @@ class X11Backend:
             from Xlib import display as xdisplay
         except ImportError as exc:  # pragma: no cover - depends on the extra
             raise CaptureError(
-                "python-xlib is not installed; install the 'x11' extra"
+                "python-xlib is not installed, so the game window cannot be "
+                "captured. Install it with: uv sync --extra desktop --extra x11"
             ) from exc
 
         try:

@@ -8,12 +8,15 @@ orders.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from voidsight.data import sources
+
+log = logging.getLogger(__name__)
 
 RARITIES = (
     ("rare1", "rare"),
@@ -98,6 +101,13 @@ class Catalog:
     relics: dict[str, Relic] = field(default_factory=dict)
     #: normalized text (including aliases) -> canonical part name
     aliases: dict[str, str] = field(default_factory=dict)
+    #: Feeds that could not be fetched. Non-empty means this catalog is built
+    #: from whatever was reachable, and some things are missing.
+    missing: tuple[str, ...] = ()
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.missing)
 
     def lookup(self, name: str) -> Part | None:
         """Resolve a name, alias or OCR-normalized string to a part."""
@@ -192,6 +202,49 @@ def build(
     return catalog
 
 
+def build_from_market(market_items: dict[str, Any]) -> Catalog:
+    """A reduced catalog from warframe.market alone.
+
+    WFInfo's feeds carry the relic drop tables, vaulted flags and rolling
+    averages, and they live on one host. When that host is down a first run
+    would otherwise have no item data at all and the app could not start. The
+    market's own list is enough for the core job — it names every prime part,
+    which is what OCR matches against, and carries the slug and ducats needed to
+    price one.
+
+    What is absent: relic drop tables (so matching cannot be narrowed to the six
+    rewards a relic can give), vaulted flags, and average prices with volume.
+    Absence is left as absence rather than defaulted to something that reads as
+    a claim.
+    """
+    catalog = Catalog(missing=("filtered_items", "prices"))
+    for item in market_items.get("data", []):
+        tags = set(item.get("tags") or ())
+        # Sets are tradeable but are not what a reward screen shows.
+        if "prime" not in tags or "set" in tags:
+            continue
+        name = item.get("i18n", {}).get("en", {}).get("name")
+        if not name:
+            continue
+        english = item["i18n"]["en"]
+        part = Part(
+            name=name,
+            set_name=None,
+            kind=next((tag for tag in ("warframe", "weapon") if tag in tags), None),
+            ducats=int(item.get("ducats") or 0),
+            vaulted=False,
+            display_name=name,
+            slug=item.get("slug"),
+            item_id=item.get("id"),
+            game_ref=item.get("gameRef"),
+            icon=english.get("icon"),
+            sub_icon=english.get("subIcon"),
+        )
+        catalog.parts[part.name] = part
+        catalog.aliases[normalize(part.name)] = part.name
+    return catalog
+
+
 def _with_market_data(
     part: Part,
     price_by_name: dict[str, dict[str, Any]],
@@ -254,9 +307,19 @@ def _as_int(value: Any) -> int | None:
 
 
 def load(*, refresh: bool = False, offline: bool = False) -> Catalog:
-    """Build a catalog from cached (or freshly downloaded) feeds."""
-    return build(
-        sources.load(sources.FILTERED_ITEMS, refresh=refresh, offline=offline),
-        sources.load(sources.PRICES, refresh=refresh, offline=offline),
-        sources.load(sources.MARKET_ITEMS, refresh=refresh, offline=offline),
-    )
+    """Build a catalog from cached (or freshly downloaded) feeds.
+
+    The three feeds live on two hosts, so one being down should not stop the app
+    starting. If WFInfo's feeds are unreachable but the market's list is not, a
+    reduced catalog is built from the latter; only losing both is fatal.
+    """
+    import httpx
+
+    market = sources.load(sources.MARKET_ITEMS, refresh=refresh, offline=offline)
+    try:
+        filtered = sources.load(sources.FILTERED_ITEMS, refresh=refresh, offline=offline)
+        prices = sources.load(sources.PRICES, refresh=refresh, offline=offline)
+    except (httpx.HTTPError, FileNotFoundError, OSError) as exc:
+        log.warning("WFInfo feeds unavailable (%s); using warframe.market alone", exc)
+        return build_from_market(market)
+    return build(filtered, prices, market)

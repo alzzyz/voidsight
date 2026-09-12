@@ -103,6 +103,10 @@ class Header(QFrame):
         self.game = StatusChip()
         layout.addWidget(self.game)
 
+        self.data = StatusChip()
+        self.data.hide()
+        layout.addWidget(self.data)
+
         self.market = StatusChip()
         layout.addWidget(self.market)
 
@@ -159,6 +163,18 @@ class Header(QFrame):
             self.game.set("Warframe not detected", style.active().faint, "idle", hollow=True)
         if state.signals:
             self.game.setToolTip(f"{state.summary} — {state.detail}")
+
+    def set_data_state(self, missing: tuple[str, ...]) -> None:
+        """Warn when the item data is incomplete, so prices are not over-trusted."""
+        if not missing:
+            self.data.hide()
+            return
+        self.data.show()
+        self.data.set("LIMITED DATA", style.active().warn, "bad", icon="warning")
+        self.data.setToolTip(
+            f"Could not fetch {', '.join(missing)}. Reward reading and live prices "
+            "work; relic drop tables, vaulted flags and average prices are missing."
+        )
 
     def set_market_state(self, *, connected: bool, name: str | None = None) -> None:
         if connected:

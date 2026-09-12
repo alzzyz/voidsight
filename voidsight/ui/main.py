@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
         bridge.busy.connect(self.settings.set_busy)
 
         self._current_page = "home"
+        self.header.set_data_state(getattr(session.catalog, "missing", ()))
         self.game_state = game.GameState(running=False)
         self._detect_timer = QTimer(self)
         self._detect_timer.timeout.connect(self.refresh_game_state)

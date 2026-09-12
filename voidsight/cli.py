@@ -100,6 +100,49 @@ def main(argv: list[str] | None = None) -> int:
     return args.func(args)
 
 
+def _load_catalog():
+    """The catalog, fetching the feeds if this machine has none yet.
+
+    A first run has an empty cache. Failing with a traceback and telling someone
+    to go and run another command is a poor welcome for three HTTP requests we
+    can make ourselves — so fetch, and only complain if that cannot be done.
+    Returns None when there is nothing usable, having already explained why.
+    """
+    import httpx
+
+    from voidsight.data import catalog as catalog_module
+
+    try:
+        return catalog_module.load(offline=True)
+    except FileNotFoundError:
+        pass
+
+    print("No item data cached yet; fetching it now…", file=sys.stderr)
+    try:
+        catalog = catalog_module.load(refresh=True)
+    except (httpx.HTTPError, OSError) as exc:
+        print(
+            f"could not download the item data: {exc}\n"
+            "voidsight needs one online run to fetch item names, relic tables and "
+            "prices. Connect and try again, or run `voidsight update-data`.",
+            file=sys.stderr,
+        )
+        return None
+    print(f"Fetched {len(catalog.parts)} items and {len(catalog.relics)} relics.", file=sys.stderr)
+    return catalog
+
+
+def _warn_if_degraded(catalog) -> None:
+    if not getattr(catalog, "degraded", False):
+        return
+    print(
+        f"Running without {', '.join(catalog.missing)} (that host is unreachable). "
+        "Reward reading and live prices work; relic drop tables, vaulted flags and "
+        "average prices are unavailable until it returns.",
+        file=sys.stderr,
+    )
+
+
 def _update_data(args: argparse.Namespace) -> int:
     from voidsight.data import catalog as catalog_module
     from voidsight.data import sources
@@ -117,6 +160,8 @@ def _update_data(args: argparse.Namespace) -> int:
         f"{slugged} with market slug, {priced} priced)"
     )
     print(f"relics: {len(cat.relics)} across {len(eras)} eras ({', '.join(eras)})")
+    if cat.degraded:
+        print(f"degraded: could not fetch {', '.join(cat.missing)}")
     print(f"match keys: {len(cat.match_keys)}")
 
     missing = _missing_reward_names(cat)
@@ -131,7 +176,6 @@ def _scan(args: argparse.Namespace) -> int:
     import cv2
 
     from voidsight.config import Config
-    from voidsight.data import catalog as catalog_module
     from voidsight.vision import ocr, pipeline
 
     if not args.image.exists():
@@ -153,7 +197,10 @@ def _scan(args: argparse.Namespace) -> int:
     if args.ui_scale:
         config.ui_scale = args.ui_scale
 
-    catalog = catalog_module.load(offline=True)
+    catalog = _load_catalog()
+    if catalog is None:
+        return 2
+    _warn_if_degraded(catalog)
     relic = catalog.relic(args.relic) if args.relic else None
     if args.relic and relic is None:
         print(f"unknown relic {args.relic!r}", file=sys.stderr)
@@ -233,7 +280,6 @@ def _watch(args: argparse.Namespace) -> int:
     from voidsight.app.state import ScanStore
     from voidsight.capture.base import CaptureError, RingBuffer
     from voidsight.config import Config
-    from voidsight.data import catalog as catalog_module
     from voidsight.live import LiveRunner
     from voidsight.pricing.market import MarketClient
     from voidsight.trigger.eelog import find_log
@@ -265,7 +311,10 @@ def _watch(args: argparse.Namespace) -> int:
         print("no capture backend available; run `voidsight probe`", file=sys.stderr)
         return 2
 
-    catalog = catalog_module.load(offline=True)
+    catalog = _load_catalog()
+    if catalog is None:
+        return 2
+    _warn_if_degraded(catalog)
     session = Session(
         scanner=pipeline.Scanner(catalog, config=config),
         market=MarketClient(platform=config.platform),
@@ -295,7 +344,6 @@ def _app(args: argparse.Namespace) -> int:
     from voidsight.app.state import ScanStore
     from voidsight.capture.base import CaptureError, RingBuffer
     from voidsight.config import Config
-    from voidsight.data import catalog as catalog_module
     from voidsight.instance import SingleInstance
     from voidsight.pricing.market import MarketClient
     from voidsight.trigger.eelog import find_log
@@ -328,7 +376,10 @@ def _app(args: argparse.Namespace) -> int:
         print(f"capture backend: {exc}", file=sys.stderr)
         backend = None
 
-    catalog = catalog_module.load(offline=True)
+    catalog = _load_catalog()
+    if catalog is None:
+        return 2
+    _warn_if_degraded(catalog)
     session = Session(
         scanner=pipeline.Scanner(catalog, config=config),
         market=MarketClient(platform=config.platform),
@@ -424,7 +475,6 @@ def _serve(args: argparse.Namespace) -> int:
     from voidsight.app.state import ScanStore
     from voidsight.capture.base import CaptureError, RingBuffer
     from voidsight.config import Config
-    from voidsight.data import catalog as catalog_module
     from voidsight.pricing.market import MarketClient
     from voidsight.vision import ocr, pipeline
 
@@ -448,7 +498,10 @@ def _serve(args: argparse.Namespace) -> int:
         print(f"capture backend: {exc}", file=sys.stderr)
         backend = None
 
-    catalog = catalog_module.load(offline=True)
+    catalog = _load_catalog()
+    if catalog is None:
+        return 2
+    _warn_if_degraded(catalog)
     session = Session(
         scanner=pipeline.Scanner(catalog, config=config),
         market=MarketClient(platform=config.platform),

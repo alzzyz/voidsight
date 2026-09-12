@@ -16,10 +16,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The desktop client. Also the toolkit an in-game overlay would use.
-desktop = ["PySide6>=6.7", "qtawesome>=1.3"]
-# Linux-only capture backends. Not installed on macOS dev machines.
-x11 = ["python-xlib>=0.33"]
+# The desktop client. Also the toolkit an in-game overlay would use. On Linux
+# this pulls in X11 capture too: `--extra desktop` alone installed a client that
+# could not see the game, which is not a distinction worth making someone learn.
+desktop = [
+    "PySide6>=6.7",
+    "qtawesome>=1.3",
+    "python-xlib>=0.33; sys_platform == 'linux'",
+]
+# Capture on its own, for a headless or CLI-only install.
+x11 = ["python-xlib>=0.33; sys_platform == 'linux'"]
 portal = ["dbus-next>=0.2.3", "PyGObject>=3.48"]
 
 [project.scripts]
