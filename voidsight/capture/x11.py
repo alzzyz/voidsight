@@ -23,6 +23,10 @@ from voidsight.capture.base import CaptureError, Frame
 log = logging.getLogger(__name__)
 
 DEFAULT_WINDOW_NAMES = ("warframe", "gamescope")
+#: How deep to walk the X window tree. Compositors nest to different depths —
+#: KWin reparents for decorations, gamescope nests a server of its own — and a
+#: few extra levels cost one round trip each.
+WALK_DEPTH = 6
 #: How often to go looking for the game's window while we do not have it. The
 #: capture loop asks for a frame several times a second and walking the X tree
 #: that often would be wasteful — a game starting is a human-timescale event.
@@ -106,8 +110,21 @@ class X11Backend:
         except Exception:  # pragma: no cover - best effort
             pass
 
-    def windows(self) -> list[WindowInfo]:
-        """Every mapped, named top-level window — useful for diagnostics."""
+    @property
+    def display_name(self) -> str:
+        """Which X server this is actually talking to."""
+        try:
+            return str(self._display.get_display_name())
+        except Exception:  # pragma: no cover - depends on the xlib build
+            return "?"
+
+    def windows(self, *, named_only: bool = True, min_size: int = 200) -> list[WindowInfo]:
+        """Mapped top-level windows — the big named ones, or everything.
+
+        The filtered form is what window-matching uses. The unfiltered form is
+        for diagnostics: "no window matched" and "the tree was empty" are very
+        different faults, and only the second is about capture at all.
+        """
         found: list[WindowInfo] = []
         for window in self._walk(self._root):
             try:
@@ -115,20 +132,26 @@ class X11Backend:
                 geometry = window.get_geometry()
             except Exception:
                 continue
-            if not name or geometry.width < 200 or geometry.height < 200:
+            if named_only and not name:
+                continue
+            if geometry.width < min_size or geometry.height < min_size:
                 continue
             found.append(
                 WindowInfo(
                     id=window.id,
-                    name=str(name),
+                    name=str(name) if name else "",
                     width=geometry.width,
                     height=geometry.height,
                 )
             )
         return found
 
+    def tree_size(self) -> int:
+        """How many windows are in the tree at all, named or not."""
+        return sum(1 for _ in self._walk(self._root))
+
     def _walk(self, window, depth: int = 0):
-        if depth > 3:
+        if depth > WALK_DEPTH:
             return
         try:
             children = window.query_tree().children

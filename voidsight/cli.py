@@ -281,22 +281,43 @@ def _probe(args: argparse.Namespace) -> int:
     from voidsight.capture import probe
 
     print(probe.describe_session())
+    print(probe.describe_game())
     print()
     results = probe.probe_all(args.window, args.save_to)
     for result in results:
         print(f"  {result.symbol} {result.backend:8} {result.detail}")
         for extra in result.extras[:12]:
-            print(f"          window: {extra}")
+            print(f"          {extra}")
 
     if any(result.available for result in results):
         working = next(result.backend for result in results if result.available)
         print(f"\nusable backend: {working}")
         return 0
-    print(
-        "\nNo backend captured a frame. If Warframe is running, this is the case"
-        "\nwhere the xdg-desktop-portal screencast backend is needed — report the"
-        "\noutput above so it can be built against what your compositor allows."
-    )
+
+    print()
+    if all(result.empty_tree for result in results):
+        # An empty tree is not a capture problem, and sending someone off to
+        # build a portal backend over it wastes their afternoon.
+        print(
+            "This X connection sees no windows at all — not Warframe's, not anyone's.\n"
+            "That is a connection fault rather than a capture one. Usually one of:\n"
+            "  - the game is not actually running (the line above says which)\n"
+            "  - DISPLAY names a different X server than the one the game is on;\n"
+            "    on a Wayland session the game's XWayland server may be :1, not :0\n"
+            "  - the client runs in a sandbox (Flatpak, container) that does not\n"
+            "    share the host's X socket with it\n"
+            "Compare `echo $DISPLAY` here against the game's own environment:\n"
+            "  tr '\\0' '\\n' < /proc/$(pgrep -f Warframe.x64.exe | head -1)/environ \\\n"
+            "    | grep -E '^DISPLAY='"
+        )
+    else:
+        print(
+            "No backend captured a frame, but this X connection can see windows —\n"
+            "so either the game's window is named something we do not match (the\n"
+            "list above says what is there), or the compositor refused to let us\n"
+            "read it, which is the case the xdg-desktop-portal screencast backend\n"
+            "exists for. Report the output above."
+        )
     return 1
 
 

@@ -1,5 +1,5 @@
 """voidsight — Linux Warframe relic reward scanner and pricer."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 USER_AGENT = f"voidsight/{__version__} (+https://github.com/alzzyz/voidsight)"

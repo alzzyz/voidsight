@@ -27,6 +27,8 @@ class ProbeResult:
     detail: str
     frame: Frame | None = None
     extras: list[str] = field(default_factory=list)
+    #: No windows at all, which is a connection fault rather than a capture one.
+    empty_tree: bool = False
 
     @property
     def symbol(self) -> str:
@@ -44,6 +46,19 @@ def describe_session() -> str:
     return "  ".join(parts)
 
 
+def describe_game() -> str:
+    """Whether the game is running, by a signal that does not involve X.
+
+    Reading /proc answers "is it even up?" independently of whether we can see
+    a window, and those two questions have completely different answers when
+    the X connection is the broken part.
+    """
+    from voidsight import game
+
+    pid = game.find_process()
+    return f"Warframe process: {f'running (pid {pid})' if pid else 'not found in /proc'}"
+
+
 def probe_x11(window_name: str | None = None) -> ProbeResult:
     from voidsight.capture.x11 import X11Backend
 
@@ -57,7 +72,13 @@ def probe_x11(window_name: str | None = None) -> ProbeResult:
         # The backend itself waits for the game's window rather than refusing to
         # start without one; a probe is asking about right now, so it reports it.
         if backend.window_info is None:
-            return ProbeResult("x11", False, backend.missing_window_message, extras=windows)
+            return ProbeResult(
+                "x11",
+                False,
+                backend.missing_window_message,
+                extras=_inventory(backend, windows),
+                empty_tree=not windows,
+            )
         frame = backend.grab()
         if frame is None:
             return ProbeResult(
@@ -80,6 +101,24 @@ def probe_x11(window_name: str | None = None) -> ProbeResult:
         )
     finally:
         backend.close()
+
+
+def _inventory(backend, windows: list[str]) -> list[str]:
+    """What this X connection can see, when it cannot see the game.
+
+    An empty tree and a tree full of other people's windows call for opposite
+    advice — the first means we are on the wrong X server or cannot read it,
+    the second means the game's window is named something unexpected.
+    """
+    lines = [f"connected to {backend.display_name}"]
+    if windows:
+        lines.extend(windows)
+        return lines
+
+    everything = backend.windows(named_only=False, min_size=1)
+    lines.append(f"{backend.tree_size()} window(s) in the tree, none of them named and sizeable")
+    lines.extend(str(info) for info in everything[:8])
+    return lines
 
 
 def probe_all(window_name: str | None = None, save_to: Path | None = None) -> list[ProbeResult]:

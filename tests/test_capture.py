@@ -53,6 +53,9 @@ class FakeDisplay:
     def screen(self) -> Any:
         return types.SimpleNamespace(root=_CountingWindow(self.root, self))
 
+    def get_display_name(self) -> str:
+        return ":9"
+
     def create_resource_object(self, kind: str, id: int) -> FakeWindow:
         for window in self.root.children:
             if window.id == id:
@@ -174,6 +177,24 @@ class TestWindowDiscovery:
         assert find_window_title() == "Warframe"
 
 
+class TestWindowInventory:
+    """When the game is not found, what else is there is the whole diagnosis."""
+
+    def test_unnamed_and_small_windows_are_available(self, fake_x11):
+        root, _ = fake_x11
+        root.children.append(FakeWindow(0x2000, None, 1, 1))
+        root.children.append(FakeWindow(0x2001, "panel", 40, 20))
+        capture = backend()
+
+        assert capture.windows() == []
+        everything = capture.windows(named_only=False, min_size=1)
+        assert len(everything) == 2
+        assert capture.tree_size() == 2
+
+    def test_display_name_is_reported(self, fake_x11):
+        assert backend().display_name == ":9"
+
+
 class TestProbe:
     """A probe answers about right now, so it does report a missing window."""
 
@@ -183,6 +204,35 @@ class TestProbe:
         result = probe.probe_x11()
         assert not result.available
         assert "is Warframe running?" in result.detail
+
+    def test_an_empty_tree_is_distinguished_from_a_busy_one(self, fake_x11):
+        """These two need opposite advice, and only one is about capture.
+
+        An X connection that sees nothing at all is on the wrong server or
+        cannot read it; one full of other windows means the game's window is
+        named something we do not match. Sending someone to build a portal
+        backend over the first wastes their afternoon.
+        """
+        from voidsight.capture import probe
+
+        root, _ = fake_x11
+        empty = probe.probe_x11()
+        assert empty.empty_tree
+        assert any("connected to :9" in line for line in empty.extras)
+
+        add_game(root, name="Some Other Game")
+        busy = probe.probe_x11()
+        assert not busy.available
+        assert not busy.empty_tree
+        assert any("Some Other Game" in line for line in busy.extras)
+
+    def test_a_capture_is_not_flagged_as_an_empty_tree(self, fake_x11):
+        from voidsight.capture import probe
+
+        add_game(fake_x11[0])
+        result = probe.probe_x11()
+        assert result.available
+        assert not result.empty_tree
 
     def test_reports_a_capture(self, fake_x11):
         from voidsight.capture import probe

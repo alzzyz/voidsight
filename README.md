@@ -144,7 +144,11 @@ Capture is the one part that cannot be settled by reading documentation — whet
 on the Warframe window works depends on the compositor. On Wayland, Warframe runs through XWayland
 (Proton), so its window is a real X11 window and often readable; KWin may refuse.
 
-1. Start Warframe, then run `voidsight probe --save-to /tmp/probe` and look at the saved PNG.
+1. Start Warframe — actually into a mission or the orbiter, not the launcher — then run
+   `voidsight probe --save-to /tmp/probe` and look at the saved PNG. The probe reports whether the
+   game's process is visible in `/proc` (which needs no X at all), which X server it connected to,
+   and every window that server has, so "the game is not up", "we are on the wrong X server" and
+   "the compositor will not let us read the window" are told apart rather than guessed at.
 2. If it captured a real frame, `voidsight watch` should work as is.
 3. If it captured black or found nothing, the xdg-desktop-portal screencast path is needed — the
    probe output says so, and that backend is the next thing to build.
