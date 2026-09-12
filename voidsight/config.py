@@ -103,6 +103,12 @@ class Config:
     #: How long the overlay stays up. The reward screen lasts about ten seconds.
     overlay_seconds: float = 12.0
     overlay_opacity: float = 0.95
+    #: How many reward columns to OCR at once. Each read spawns a tesseract
+    #: process, so raising this shortens a scan — but four of them faulting in
+    #: the same file-backed mappings at once hardlocked a 7.2.4 kernel in
+    #: filemap_map_pages, taking the machine with it. One is the safe default;
+    #: raise it only on a kernel you trust with the workload.
+    ocr_workers: int = 1
     #: "auto", "x11", "portal" or "replay".
     backend: str = "auto"
     #: Path to EE.log; None means auto-discover the Proton prefix.

@@ -120,6 +120,7 @@ theme = "Vitruvian"    # your Warframe UI theme; omit to detect it
 ui_scale = 1.0         # Warframe's own UI Scaling, as a multiplier (1.0 = 100%)
 client_size = "M"      # size of this app's window: S, M, L, XL
 backend = "auto"       # auto | x11 | replay
+ocr_workers = 1        # reward columns to OCR at once; see below before raising
 prefer = "platinum"    # which reward the UI marks as best: platinum | ducats
 port = 8765
 
@@ -128,7 +129,14 @@ port = 8765
 # panel_region = [0.25, 0.2, 0.5, 0.4]
 ```
 
-Everything here can be set from the Settings panel except `panel_region`.
+Everything here can be set from the Settings panel except `panel_region` and `ocr_workers`.
+
+`ocr_workers` is one by default and worth leaving there. Each reward column is read by its own
+`tesseract` process, so raising it to four shortens a scan by about 40% — and four of them faulting
+in the same file-backed mappings at once triggered a kernel general protection fault in
+`filemap_map_pages` on 7.2.4-1-cachyos, which hardlocked the machine with no clean shutdown. That is
+a kernel bug: no userspace program can legally fault the kernel, and none can work around one except
+by not provoking it. Raise this only on a kernel you have seen survive the workload.
 
 ## Bringing up a new machine
 

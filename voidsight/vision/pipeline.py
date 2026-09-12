@@ -78,8 +78,16 @@ class ScanResult:
 
 #: A reading this good is accepted without trying the remaining candidates.
 GOOD_ENOUGH = 0.75
-#: How many columns to read at once. One per reward is the most that helps.
-OCR_WORKERS = 4
+#: How many columns to read at once, unless the config says otherwise.
+#:
+#: One, deliberately. Four concurrent tesseract processes faulting in the same
+#: file-backed mappings triggered a kernel general protection fault in
+#: filemap_map_pages and hardlocked the machine — a kernel bug that userspace
+#: cannot cause and cannot fix, but whose trigger is this workload. The
+#: parallel path is kept, off by default, for kernels that survive it.
+OCR_WORKERS = 1
+#: The most that can ever help: one worker per reward.
+MAX_OCR_WORKERS = 4
 
 
 def scan(
@@ -92,6 +100,7 @@ def scan(
     relic: Relic | None = None,
     max_candidates: int = 6,
     region: Sequence[float] | None = None,
+    workers: int = OCR_WORKERS,
     debug_dir: Path | None = None,
 ) -> ScanResult:
     """Read the reward names out of a full-frame RGB screenshot.
@@ -121,7 +130,7 @@ def scan(
     names = [reward.part_name for reward in relic.rewards] if relic else None
     best: ScanResult | None = None
     for attempt, panel in enumerate(panels, start=1):
-        result = _read_panel(panel, catalog, reader, names, relic)
+        result = _read_panel(panel, catalog, reader, names, relic, workers)
         result.notes["candidates_tried"] = attempt
         if best is None or _rank(result) > _rank(best):
             best = result
@@ -272,6 +281,7 @@ class Scanner:
             # search than the steady-state path with the theme pinned.
             max_candidates=6 if ui_theme else 12,
             region=self.config.panel_region,
+            workers=self.config.ocr_workers,
             debug_dir=debug_dir,
         )
 
@@ -287,6 +297,7 @@ def _read_panel(
     reader: ocr_module.Reader,
     names: list[str] | None,
     relic: Relic | None,
+    workers: int = OCR_WORKERS,
 ) -> ScanResult:
     result = ScanResult(
         theme=panel.theme, relic=relic, panel=panel, notes=dict(panel.notes)
@@ -296,12 +307,13 @@ def _read_panel(
         return result
 
     # Each read spawns a tesseract process, and the spawn is nearly all of the
-    # cost — so the columns overlap almost perfectly and a four-column panel
-    # costs about what one column used to.
-    if len(columns) == 1:
-        reads = [reader.read(columns[0].image)]
+    # cost, so overlapping them shortens a scan considerably. It is off by
+    # default all the same: see OCR_WORKERS.
+    parallel = max(1, min(workers, MAX_OCR_WORKERS, len(columns)))
+    if parallel == 1:
+        reads = [reader.read(column.image) for column in columns]
     else:
-        with ThreadPoolExecutor(max_workers=min(OCR_WORKERS, len(columns))) as pool:
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
             reads = list(pool.map(lambda column: reader.read(column.image), columns))
 
     for column, read in zip(columns, reads, strict=True):

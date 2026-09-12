@@ -255,12 +255,64 @@ class TestScanCost:
         scanner.scan(np.zeros((1080, 1920, 3), dtype=np.uint8))
         assert None in calls
 
+    def test_parallel_ocr_is_off_by_default(self):
+        """Four concurrent tesseract processes hardlocked a 7.2.4 kernel.
+
+        The fault was the kernel's (filemap_map_pages, general protection, no
+        userspace fix), but this workload is what triggered it, and the cost of
+        a recurrence is the whole machine with no sync. It stays opt-in.
+        """
+        assert pipeline.OCR_WORKERS == 1
+        assert Config().ocr_workers == 1
+
+    @pytest.mark.parametrize("workers,expected", [(0, 1), (1, 1), (3, 3), (99, 4)])
+    def test_worker_count_is_clamped(
+        self, workers: int, expected: int, small_catalog: C.Catalog, monkeypatch
+    ):
+        """A hand-edited config must not be able to ask for forty processes."""
+        used: list[int] = []
+
+        class Pool:
+            def __init__(self, max_workers):
+                used.append(max_workers)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def map(self, fn, items):
+                return [fn(item) for item in items]
+
+        monkeypatch.setattr(pipeline, "ThreadPoolExecutor", Pool)
+        columns = [
+            L.Column(index=i, box=L.Box(0, 0, 10, 10), image=np.zeros((10, 10), np.uint8))
+            for i in range(4)
+        ]
+        panel = L.Panel(
+            box=L.Box(0, 0, 10, 10),
+            scale=1.0,
+            theme=theme_module.get("Vitruvian"),
+            binary=np.zeros((10, 10), np.uint8),
+            columns=columns,
+        )
+
+        class Silent:
+            def read(self, image):
+                return O.OcrResult(text="", confidence=0.0)
+
+        pipeline._read_panel(panel, small_catalog, Silent(), None, None, workers)
+        assert used == ([] if expected == 1 else [expected])
+
     @needs_tesseract
     def test_columns_read_in_parallel_stay_in_their_own_order(self, catalog):
         # Reading the columns concurrently must not shuffle them: reward 0 is
         # the leftmost card, and the UI marks one of them as the best pick.
         frame = render_reward_screen(REWARDS, theme_name="Vitruvian", seed=1)
-        result = pipeline.scan(frame, catalog, ui_theme=theme_module.get("Vitruvian"))
+        result = pipeline.scan(
+            frame, catalog, ui_theme=theme_module.get("Vitruvian"), workers=4
+        )
         assert [reward.index for reward in result.rewards] == list(range(len(result.rewards)))
         assert [reward.name for reward in result.identified] == [
             name for name in REWARDS if name in {r.name for r in result.identified}
