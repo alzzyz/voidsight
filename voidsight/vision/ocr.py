@@ -50,10 +50,37 @@ def preprocess(image: np.ndarray) -> np.ndarray:
     )
 
 
-class TesseractReader:
-    """Reads a single line of text using Tesseract in single-line mode."""
+#: Tesseract page segmentation: 7 is one line, 6 a uniform block of them.
+SINGLE_LINE_PSM = 7
+BLOCK_PSM = 6
 
-    def __init__(self, *, language: str = "eng", psm: int = 7) -> None:
+
+def line_count(image: np.ndarray) -> int:
+    """How many rows of text a binary crop holds.
+
+    A reward name that does not fit its card wraps, and Tesseract in
+    single-line mode reads a two-line crop as one run of nonsense — so the
+    crop decides the page segmentation rather than a fixed setting.
+    """
+    if image.ndim == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    if image.size == 0:
+        return 0
+    # Crops are bi-level; ink is whichever polarity is in the minority.
+    ink = image < 128 if image.mean() > 127 else image > 127
+    lit = ink.sum(axis=1) > max(1, 0.02 * image.shape[1])
+    lines, previous = 0, False
+    for value in lit:
+        if value and not previous:
+            lines += 1
+        previous = bool(value)
+    return lines
+
+
+class TesseractReader:
+    """Reads a reward name, one line or two, using Tesseract."""
+
+    def __init__(self, *, language: str = "eng", psm: int = SINGLE_LINE_PSM) -> None:
         self.language = language
         self.psm = psm
 
@@ -63,16 +90,22 @@ class TesseractReader:
 
     @property
     def config(self) -> str:
-        return f"--psm {self.psm} -c tessedit_char_whitelist=\"{WHITELIST}\""
+        return self.config_for(self.psm)
+
+    def config_for(self, psm: int) -> str:
+        return f"--psm {psm} -c tessedit_char_whitelist=\"{WHITELIST}\""
 
     def read(self, image: np.ndarray) -> OcrResult:
         import pytesseract
 
         prepared = preprocess(image)
+        # Both lines of a wrapped name are the name, and joining the words back
+        # together is exactly what this reader already does with them.
+        psm = BLOCK_PSM if line_count(image) > 1 else self.psm
         data = pytesseract.image_to_data(
             prepared,
             lang=self.language,
-            config=self.config,
+            config=self.config_for(psm),
             output_type=pytesseract.Output.DICT,
         )
         words: list[str] = []

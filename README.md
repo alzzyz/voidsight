@@ -15,15 +15,19 @@ Inspired by [AlecaFrame](https://alecaframe.com/) (Windows/Overwolf only) and
 
 1. Watches Warframe's own `EE.log` for the lines the game writes when a reward screen opens, and
    for the relic you just cracked.
-2. Pulls a frame from a rolling capture buffer. Wine buffers the game's log writes, so the trigger
-   often arrives *after* the screen appeared — the buffer is searched backwards until a frame reads,
-   which is the failure mode existing Linux tools document.
+2. Pulls a frame from a rolling capture buffer. The trigger can land on either side of the screen
+   appearing: Wine buffers the game's log writes, so the line often arrives *after* the panel is up
+   — the failure mode existing Linux tools document — but the game also writes it when it *receives*
+   the rewards, before the panel has animated in. So the buffer is searched backwards first, and if
+   nothing in it showed rewards, frames are read as they arrive for a few seconds more.
 3. Masks the frame by the UI theme's accent colours to isolate reward text, and looks for a band
    that divides into evenly spaced columns. The reward screen has several such bands — ducat
    counts, "2 Owned", squadmate names — so which one is the names is decided by reading them, not
    by where they sit.
 4. Runs Tesseract on each column, then fuzzy-matches against the ~600 known prime part names —
-   narrowed to the relic's six possible rewards when the log told us which relic it was.
+   narrowed to the relic's six possible rewards when the log told us which relic it was. A name too
+   long for its card wraps onto a second line, and cards are bottom-aligned, so no single line holds
+   every name: neighbouring lines are offered as one band too, and read as a block.
 5. Asks warframe.market for current top orders and renders a card per reward.
 
 Locating the names on a busy frame is ambiguous, so several readings are proposed and then

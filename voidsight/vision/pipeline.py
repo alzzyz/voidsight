@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +78,8 @@ class ScanResult:
 
 #: A reading this good is accepted without trying the remaining candidates.
 GOOD_ENOUGH = 0.75
+#: How many columns to read at once. One per reward is the most that helps.
+OCR_WORKERS = 4
 
 
 def scan(
@@ -121,11 +125,15 @@ def scan(
         result.notes["candidates_tried"] = attempt
         if best is None or _rank(result) > _rank(best):
             best = result
-        # A squad can be smaller than four, so a three-reward read may be
-        # correct — but it is also what a candidate that merged two cells looks
-        # like. Only a full row is trusted enough to stop the search early.
-        if len(result.identified) == locate_module.MAX_REWARDS and result.confidence >= GOOD_ENOUGH:
-            break
+        # A squad can be smaller than four, so a clean two-reward read may be
+        # the whole truth — but it is also what a candidate that framed only
+        # half the row looks like. Stop when every located name resolved and
+        # nothing still on the list proposes more cells than this reading has.
+        # Waiting for a full four meant a two-player squad always read all six
+        # candidates, at a tesseract subprocess per column.
+        if result.ok and result.confidence >= GOOD_ENOUGH:
+            if not any(len(later.columns) > len(result.rewards) for later in panels[attempt:]):
+                break
 
     assert best is not None and best.panel is not None
     log.debug(
@@ -142,6 +150,13 @@ def scan(
 
 #: A pinned theme producing readings this poor is treated as wrong.
 RETRY_BELOW = 0.4
+#: How often the fifteen-mask theme search may re-run.
+#:
+#: A frame with no reward screen on it reads exactly like a frame under the
+#: wrong theme — nothing matches either way — and a back-scan is mostly such
+#: frames. Re-detecting per frame therefore cost more than every other part of
+#: the scan combined, on frames that could never have produced a reading.
+REDETECT_INTERVAL = 20.0
 
 
 class Scanner:
@@ -170,6 +185,7 @@ class Scanner:
         self.persist = persist
         self.config_path = config_path
         self._theme: theme_module.Theme | None = None
+        self._last_redetect = 0.0
         if self.config.theme:
             try:
                 self._theme = theme_module.get(self.config.theme)
@@ -216,11 +232,19 @@ class Scanner:
         result = self._scan(frame, self._theme, relic, debug_dir)
 
         if self._theme is not None and result.confidence < RETRY_BELOW:
-            log.info("pinned theme %s read poorly; re-detecting", self._theme.name)
-            retry = self._scan(frame, None, relic, debug_dir)
-            if _rank(retry) > _rank(result):
-                self._theme = None
-                result = retry
+            now = time.monotonic()
+            if now - self._last_redetect < REDETECT_INTERVAL:
+                log.debug(
+                    "pinned theme %s read nothing; not re-running the theme search yet",
+                    self._theme.name,
+                )
+            else:
+                self._last_redetect = now
+                log.info("pinned theme %s read poorly; re-detecting", self._theme.name)
+                retry = self._scan(frame, None, relic, debug_dir)
+                if _rank(retry) > _rank(result):
+                    self._theme = None
+                    result = retry
 
         learned = result.ok and result.confidence >= GOOD_ENOUGH and result.theme
         if self._theme is None and learned:
@@ -267,8 +291,20 @@ def _read_panel(
     result = ScanResult(
         theme=panel.theme, relic=relic, panel=panel, notes=dict(panel.notes)
     )
-    for column in panel.columns:
-        read = reader.read(column.image)
+    columns = panel.columns
+    if not columns:
+        return result
+
+    # Each read spawns a tesseract process, and the spawn is nearly all of the
+    # cost — so the columns overlap almost perfectly and a four-column panel
+    # costs about what one column used to.
+    if len(columns) == 1:
+        reads = [reader.read(columns[0].image)]
+    else:
+        with ThreadPoolExecutor(max_workers=min(OCR_WORKERS, len(columns))) as pool:
+            reads = list(pool.map(lambda column: reader.read(column.image), columns))
+
+    for column, read in zip(columns, reads, strict=True):
         result.rewards.append(
             Reward(
                 index=column.index,

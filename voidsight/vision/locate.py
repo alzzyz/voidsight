@@ -192,6 +192,19 @@ def _text_bands(mask: np.ndarray, scale: float) -> list[tuple[int, int]]:
             bottom += 1
         if min_height <= bottom + 1 - top <= max_height:
             bands.add((top, bottom + 1))
+
+    # A reward name too long for its card wraps onto a second line, and the
+    # lines are bottom-aligned across cards — so with a mixed row ("Bronco Prime
+    # Blueprint" beside "Lavos Prime Chassis / Blueprint") *no single line*
+    # holds every name, and reading one gives a name and a fragment. Offer the
+    # union of close neighbours too, which does hold both.
+    ordered = sorted(bands)
+    joined_gap = max(4, int(14 * scale))
+    for (top, bottom), (next_top, next_bottom) in zip(ordered, ordered[1:], strict=False):
+        if next_bottom <= bottom or next_top - bottom > joined_gap:
+            continue
+        if next_bottom - top <= 2 * max_height:
+            bands.add((top, next_bottom))
     return sorted(bands)
 
 
@@ -386,28 +399,31 @@ def candidates(
             found.extend(_candidates_for_theme(mask, candidate_theme, scale))
 
     found.sort(key=lambda item: item.score, reverse=True)
-    # Spread the shortlist across themes. Several themes share an accent hue, so
-    # one theme's near-duplicate readings would otherwise fill it and crowd out
-    # the mask that actually reads. With a single pinned theme there is nothing
-    # to spread across, and the whole shortlist goes to its best readings.
-    per_theme = max(2, limit // max(1, len(themes)))
-    shortlist: list[_Candidate] = []
-    counts: dict[str, int] = {}
-    seen_shapes: set[tuple[str, int]] = set()
+    # Shortlist distinct hypotheses about *where the text is*, not distinct
+    # themes. Most themes' masks peak on the same handful of bands, so ranking
+    # by score alone spends every slot re-reading one band under eight masks —
+    # on a real frame that filled the shortlist with the top of the item art
+    # while the one candidate framing the names was never read at all.
+    bucket = max(4, int(6 * scale))
+    by_geometry: dict[tuple[int, int, int], list[_Candidate]] = {}
     for candidate in found:
-        # One entry per theme and reward count. Peak detection returns several
-        # near-identical bands for the same line of text, and without this they
-        # fill the shortlist with the same reading three times over and crowd
-        # out the split that actually separates all four rewards.
-        shape = (candidate.theme.name, len(candidate.groups))
-        if shape in seen_shapes:
-            continue
-        seen = counts.get(candidate.theme.name, 0)
-        if seen >= per_theme:
-            continue
-        seen_shapes.add(shape)
-        counts[candidate.theme.name] = seen + 1
-        shortlist.append(candidate)
+        top, bottom = candidate.band
+        by_geometry.setdefault(
+            (top // bucket, bottom // bucket, len(candidate.groups)), []
+        ).append(candidate)
+
+    ranked = sorted(by_geometry.values(), key=lambda group: group[0].score, reverse=True)
+    shortlist = [group[0] for group in ranked[:limit]]
+    if len(shortlist) < limit:
+        # Spare slots go back to geometries already shortlisted, under their
+        # next-best theme: identical pixels, but a mask that may frame the text
+        # where the first one clipped it.
+        spares = [candidate for group in ranked for candidate in group[1:]]
+        spares.sort(key=lambda candidate: candidate.score, reverse=True)
+        shortlist.extend(spares[: limit - len(shortlist)])
+    # Best geometry first, whatever order the buckets were filled in: the caller
+    # reads candidates in this order and stops at the first clean one.
+    shortlist.sort(key=lambda candidate: candidate.score, reverse=True)
 
     panels = [
         _to_panel(candidate, box, scale, len(themes), len(found))

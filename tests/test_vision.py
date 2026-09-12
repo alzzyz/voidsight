@@ -158,17 +158,144 @@ class TestLocate:
         panels = L.candidates(render_reward_screen(REWARDS, seed=4), limit=6)
         assert len(panels) > 1
         assert panels == sorted(panels, key=lambda panel: panel.score, reverse=True)
-        # Spread across themes rather than six variations of one mask, and no
-        # two candidates proposing the same theme and reward count.
         assert len({panel.theme.name for panel in panels}) > 1
-        shapes = [(panel.theme.name, len(panel.columns)) for panel in panels]
-        assert len(set(shapes)) == len(shapes)
+
+    def test_candidates_are_distinct_places_to_look(self):
+        """Every slot must be a different hypothesis about where the names are.
+
+        Most themes' masks peak on the same bands, so ranking by score alone
+        spends all six slots re-reading one band under six masks. On a real
+        3440x1440 frame that meant six readings of the top of the item art
+        while the band holding the names was never read at all.
+        """
+        panels = L.candidates(render_reward_screen(REWARDS, seed=4), limit=6)
+        seen: dict[tuple, str] = {}
+        for panel in panels:
+            key = (panel.notes["band"], len(panel.columns))
+            if key in seen:
+                # One place may be offered twice, but only under a different
+                # mask — the same mask on the same pixels is the same reading.
+                assert panel.theme.name != seen[key]
+            seen[key] = panel.theme.name
+        # Most of the shortlist is somewhere new, rather than one band over.
+        assert len(seen) > len(panels) // 2
+
+    def test_a_wrapped_name_is_offered_as_one_band(self):
+        """A long reward name wraps, and the cards are bottom-aligned.
+
+        "Bronco Prime Blueprint" beside "Lavos Prime Chassis / Blueprint" puts
+        the two names on different lines, so reading either line alone yields
+        one name and one fragment. The union of the two has to be on offer.
+        """
+        mask = np.zeros((120, 400), dtype=bool)
+        mask[30:42, 20:180] = True   # line one of the wrapped name
+        mask[48:60, 20:140] = True   # line two, and the single-line name
+        mask[48:60, 220:380] = True
+        bands = L._text_bands(mask, scale=1.0)
+        assert any(top <= 30 and bottom >= 60 for top, bottom in bands)
+        # The individual lines stay on offer too: most rows are not wrapped.
+        assert any(top >= 28 and bottom <= 44 for top, bottom in bands)
+
+    def test_distant_lines_are_not_merged(self):
+        # Two unrelated rows of text (names and squadmate labels) must not be
+        # glued into one band just because both are text.
+        mask = np.zeros((200, 400), dtype=bool)
+        mask[30:42, 20:180] = True
+        mask[150:162, 20:180] = True
+        bands = L._text_bands(mask, scale=1.0)
+        assert not any(top <= 42 and bottom >= 150 for top, bottom in bands)
 
     def test_reports_why_it_found_nothing(self):
         blank = np.zeros((1080, 1920, 3), dtype=np.uint8)
         panel = L.locate(blank)
         assert panel.columns == []
         assert "reason" in panel.notes
+
+
+class TestScanCost:
+    """A live scan reads several buffered frames; each one has to stay cheap."""
+
+    def scanner(self, catalog, **kwargs):
+        return pipeline.Scanner(catalog, persist=False, **kwargs)
+
+    def test_the_theme_search_does_not_re_run_per_frame(self, small_catalog, monkeypatch):
+        """Frames with no reward screen read exactly like a wrong theme.
+
+        A back-scan is mostly such frames, and re-running the fifteen-mask
+        search on each of them cost more than the rest of the scan combined.
+        """
+        calls: list[object] = []
+        real = pipeline.scan
+
+        def counting(frame, catalog, **kwargs):
+            calls.append(kwargs.get("ui_theme"))
+            return real(frame, catalog, **kwargs)
+
+        monkeypatch.setattr(pipeline, "scan", counting)
+        scanner = self.scanner(small_catalog, config=Config(theme="Vitruvian"))
+        blank = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for _ in range(4):
+            scanner.scan(blank)
+
+        searches = [theme for theme in calls if theme is None]
+        assert len(calls) == 5  # four pinned reads, and one search between them
+        assert len(searches) == 1
+
+    def test_a_wrong_theme_is_still_re_detected(self, small_catalog, monkeypatch):
+        monkeypatch.setattr(pipeline, "REDETECT_INTERVAL", 0.0)
+        calls: list[object] = []
+        real = pipeline.scan
+
+        def counting(frame, catalog, **kwargs):
+            calls.append(kwargs.get("ui_theme"))
+            return real(frame, catalog, **kwargs)
+
+        monkeypatch.setattr(pipeline, "scan", counting)
+        scanner = self.scanner(small_catalog, config=Config(theme="Vitruvian"))
+        scanner.scan(np.zeros((1080, 1920, 3), dtype=np.uint8))
+        assert None in calls
+
+    @needs_tesseract
+    def test_columns_read_in_parallel_stay_in_their_own_order(self, catalog):
+        # Reading the columns concurrently must not shuffle them: reward 0 is
+        # the leftmost card, and the UI marks one of them as the best pick.
+        frame = render_reward_screen(REWARDS, theme_name="Vitruvian", seed=1)
+        result = pipeline.scan(frame, catalog, ui_theme=theme_module.get("Vitruvian"))
+        assert [reward.index for reward in result.rewards] == list(range(len(result.rewards)))
+        assert [reward.name for reward in result.identified] == [
+            name for name in REWARDS if name in {r.name for r in result.identified}
+        ]
+
+
+class TestOcrSegmentation:
+    """Tesseract needs telling when a crop holds two lines rather than one."""
+
+    def blank(self, height: int, width: int = 200) -> np.ndarray:
+        return np.full((height, width), 255, dtype=np.uint8)
+
+    def test_counts_one_line(self):
+        image = self.blank(40)
+        image[12:26, 10:180] = 0
+        assert O.line_count(image) == 1
+
+    def test_counts_two_lines(self):
+        image = self.blank(70)
+        image[10:24, 10:180] = 0
+        image[40:54, 10:120] = 0
+        assert O.line_count(image) == 2
+
+    def test_blank_crop_has_no_lines(self):
+        assert O.line_count(self.blank(40)) == 0
+
+    def test_inverted_crops_are_counted_too(self):
+        image = np.zeros((40, 200), dtype=np.uint8)
+        image[12:26, 10:180] = 255
+        assert O.line_count(image) == 1
+
+    def test_reader_switches_to_block_mode_for_two_lines(self):
+        reader = O.TesseractReader()
+        assert f"--psm {O.SINGLE_LINE_PSM}" in reader.config
+        assert f"--psm {O.BLOCK_PSM}" in reader.config_for(O.BLOCK_PSM)
 
 
 class TestMatch:
