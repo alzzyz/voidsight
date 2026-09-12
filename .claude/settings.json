@@ -10,6 +10,13 @@
             "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/check-version-bump.sh\"",
             "timeout": 15,
             "statusMessage": "Checking the version bump"
+          },
+          {
+            "type": "command",
+            "if": "Bash(git push*)",
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/check-design-change.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking the design record"
           }
         ]
       }

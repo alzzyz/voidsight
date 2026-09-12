@@ -252,6 +252,10 @@ QFrame#card[matched="false"] {{ border: 1px dashed {p.border}; }}
 QLabel#name {{ font-size: 16px; font-weight: 600; }}
 QLabel#platinum {{ font-size: 36px; font-weight: 700; }}
 QLabel#platinum[best="true"] {{ color: {p.value}; }}
+/* Where the platinum figure would be on a card that has no price. Deliberately
+   quiet and never `value`: these cards are not what the player is choosing
+   between, and the accent has to stay scarce to mean anything. */
+QLabel#state {{ font-size: 18px; font-weight: 600; color: {p.muted}; }}
 QLabel#ribbon {{
     background: {p.value}; color: {p.background};
     font-size: 10px; font-weight: 800; letter-spacing: 1px;

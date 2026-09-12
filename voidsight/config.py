@@ -81,7 +81,12 @@ def log_file_path() -> Path:
 
 @dataclass
 class Config:
-    #: Warframe UI theme name, or None to work it out from the next scan.
+    #: Which colour table masks reward text, or None to work it out from the
+    #: next scan. Named "theme" for the WFInfo table it comes from, but the
+    #: setting it has to match is Warframe's **Background**, not its Theme:
+    #: reward names are drawn on the panel backdrop. A player running Theme
+    #: Zephyr with Background Vitruvian who set "Zephyr" here read nothing for
+    #: an evening. The key keeps its name so existing configs keep working.
     theme: str | None = None
     #: Warframe's own "UI Scaling" setting, as a multiplier (1.0 = 100%).
     #: Decides how big the reward panel is on screen.

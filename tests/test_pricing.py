@@ -167,3 +167,26 @@ class TestBestIndex:
 
     def test_returns_none_without_quotes(self):
         assert M.best_index([]) is None
+
+    def untradeable(self, name: str, ducats: int = 0) -> M.Quote:
+        part = C.Part(
+            name=name, set_name=None, kind=None, ducats=ducats,
+            vaulted=False, tradeable=False,
+        )
+        return M.Quote(part=part)
+
+    def test_never_recommends_an_untradeable_reward(self, catalog: C.Catalog):
+        """Forma cannot be sold at any price, so it is not a "best" pick."""
+        quotes = [self.untradeable("Forma Blueprint"), self.quote("sellable", catalog, 3, 15)]
+        assert M.best_index(quotes) == 1
+
+    def test_no_best_pick_when_nothing_is_tradeable(self):
+        quotes = [self.untradeable("Forma Blueprint"), self.untradeable("Forma Blueprint")]
+        assert M.best_index(quotes) is None
+
+    def test_untradeable_does_not_win_on_ducats_either(self, catalog: C.Catalog):
+        quotes = [
+            self.untradeable("Forma Blueprint", ducats=999),
+            self.quote("sellable", catalog, 1, 15),
+        ]
+        assert M.best_index(quotes, prefer="ducats") == 1

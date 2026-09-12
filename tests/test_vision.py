@@ -491,3 +491,49 @@ class TestScanner:
         assert config.learn_theme("Lotus", path=path)
         assert not config.learn_theme("Lotus", path=path)
         assert Config.load(path).theme == "Lotus"
+
+
+class TestScanResultOk:
+    """`ok` gates the early exit, the theme write-back and the frame search,
+    so what it tolerates matters well beyond its name."""
+
+    def reward(self, index: int, *, matched: bool) -> pipeline.Reward:
+        part = (
+            C.Part(name=f"Part {index}", set_name=None, kind=None, ducats=15, vaulted=False)
+            if matched
+            else None
+        )
+        return pipeline.Reward(
+            index=index,
+            raw_text=f"text {index}",
+            ocr_confidence=0.9,
+            match=M.Match(
+                raw_text=f"text {index}",
+                part=part,
+                score=95.0 if matched else 20.0,
+                constrained=False,
+            ),
+        )
+
+    def result(self, *matched: bool) -> pipeline.ScanResult:
+        return pipeline.ScanResult(
+            rewards=[self.reward(i, matched=flag) for i, flag in enumerate(matched)]
+        )
+
+    def test_nothing_read_is_not_ok(self):
+        assert not pipeline.ScanResult().ok
+
+    def test_all_matched_is_ok(self):
+        assert self.result(True, True, True, True).ok
+
+    def test_tolerates_an_unmatched_reward(self):
+        """Two Forma Blueprints on a four-reward screen is an ordinary drop,
+        not a failed reading."""
+        assert self.result(False, True, False, True).ok
+
+    def test_a_minority_of_matches_is_not_ok(self):
+        """A band of squadmate names where one column matched by luck."""
+        assert not self.result(True, False, False, False).ok
+
+    def test_nothing_matching_is_not_ok(self):
+        assert not self.result(False, False, False, False).ok

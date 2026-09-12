@@ -426,3 +426,55 @@ class TestFanOut:
         # The slow queue filled up and dropped updates; publishing kept working.
         assert stalled.full()
         assert store.latest["at"] == stalled.maxsize + 2
+
+
+class TestRewardState:
+    """Three card states, so a front end does not re-derive them from three
+    nullable fields — and so an item we cannot price still gets a slot."""
+
+    def reward(self, part):
+        from voidsight.vision import match as M
+        from voidsight.vision import pipeline
+
+        return pipeline.Reward(
+            index=0,
+            raw_text="Forma Blueprint",
+            ocr_confidence=0.9,
+            match=M.Match(raw_text="Forma Blueprint", part=part, score=95.0, constrained=False),
+        )
+
+    def part(self, *, tradeable: bool):
+        from voidsight.data import catalog as C
+
+        return C.Part(
+            name="Forma Blueprint", set_name=None, kind=None, ducats=0,
+            vaulted=False, tradeable=tradeable,
+        )
+
+    def state_for(self, part) -> str:
+        from voidsight.app.state import payload_for
+        from voidsight.pricing.market import Quote
+        from voidsight.vision import pipeline
+
+        result = pipeline.ScanResult(rewards=[self.reward(part)])
+        payload = payload_for(result, [Quote(part=part)])
+        return payload["rewards"][0]["state"]
+
+    def test_a_sellable_part_is_priced(self):
+        assert self.state_for(self.part(tradeable=True)) == "priced"
+
+    def test_an_untradeable_part_says_so(self):
+        assert self.state_for(self.part(tradeable=False)) == "untradeable"
+
+    def test_an_unmatched_column_is_unknown_not_an_error(self):
+        assert self.state_for(None) == "unknown"
+
+    def test_the_raw_text_survives_an_unmatched_column(self):
+        """The read is the whole diagnosis when nothing matched."""
+        from voidsight.app.state import payload_for
+        from voidsight.pricing.market import Quote
+        from voidsight.vision import pipeline
+
+        result = pipeline.ScanResult(rewards=[self.reward(None)])
+        payload = payload_for(result, [Quote(part=None)])
+        assert payload["rewards"][0]["raw_text"] == "Forma Blueprint"

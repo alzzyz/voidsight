@@ -49,7 +49,23 @@ class ScanResult:
 
     @property
     def ok(self) -> bool:
-        return bool(self.rewards) and all(reward.match.ok for reward in self.rewards)
+        """Whether this is a genuine reading of a reward screen.
+
+        Not every column has to resolve. A reward can legitimately be an item
+        the catalog does not carry: `Forma Blueprint` is untradeable, so
+        warframe.market never lists it, and a degraded catalog can be missing
+        far more. Requiring *every* column to match meant one such reward made
+        the whole reading "not ok" — which gates the early exit in `scan()`, the
+        theme write-back, and the stopping condition in `_Search.consider`, so a
+        single Forma quietly disabled theme learning and forced the candidate
+        search to run to exhaustion on every frame.
+
+        A majority is the test. A band of squadmate names still fails, because
+        none of those resolve; so does a band where one column matched by luck.
+        """
+        if not self.rewards:
+            return False
+        return len(self.identified) * 2 >= len(self.rewards)
 
     @property
     def identified(self) -> list[Reward]:

@@ -161,9 +161,31 @@ def _load_catalog():
     from voidsight.data import catalog as catalog_module
 
     try:
-        return catalog_module.load(offline=True)
+        cached = catalog_module.load(offline=True)
     except FileNotFoundError:
-        pass
+        cached = None
+
+    if cached is not None and not cached.degraded:
+        return cached
+
+    if cached is not None:
+        # A *partial* cache used to be indistinguishable from a complete one:
+        # `load(offline=True)` succeeds as soon as any one feed is present, so a
+        # host that was down when the cache was written stayed unread for as long
+        # as the other feed remained valid. That cost an evening of unreadable
+        # scans — no relic tables meant no match narrowing, and a missing
+        # `Forma Blueprint` (untradeable, so absent from warframe.market) capped
+        # confidence below the threshold that accepts a reading at all. So retry
+        # the missing feeds, and fall back to what we had if they are still down.
+        print(
+            f"Cached data is missing {', '.join(cached.missing)}; retrying…",
+            file=sys.stderr,
+        )
+        try:
+            return catalog_module.load(refresh=True)
+        except (httpx.HTTPError, OSError) as exc:
+            log.debug("retry of %s failed: %s", ", ".join(cached.missing), exc)
+            return cached
 
     print("No item data cached yet; fetching it now…", file=sys.stderr)
     try:

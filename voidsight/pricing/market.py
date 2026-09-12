@@ -195,7 +195,14 @@ def best_index(quotes: list[Quote], prefer: str = "platinum") -> int | None:
     Ducats break platinum ties, since a part worth the same platinum as another
     is strictly better if it is also worth more ducats.
     """
-    ranked = [(index, quote) for index, quote in enumerate(quotes) if quote.part is not None]
+    # Untradeable rewards are excluded, not just ranked last: "best" means the
+    # one to take for value, and a Forma Blueprint cannot be sold at any price.
+    # If every reward is untradeable there is no best pick, which is honest.
+    ranked = [
+        (index, quote)
+        for index, quote in enumerate(quotes)
+        if quote.part is not None and quote.part.tradeable
+    ]
     if not ranked:
         return None
 

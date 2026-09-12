@@ -55,15 +55,27 @@ class RewardCard(QFrame):
             header.addWidget(ribbon, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
 
+        state = reward.get("state") or ("priced" if reward.get("matched") else "unknown")
+        self.setProperty("state", state)
+
         price = QHBoxLayout()
         price.setSpacing(6)
-        platinum = QLabel(_format_platinum(reward.get("platinum")))
-        platinum.setObjectName("platinum")
-        platinum.setProperty("best", "true" if is_best else "false")
-        price.addWidget(platinum, alignment=Qt.AlignmentFlag.AlignBottom)
-        unit = QLabel("plat · lowest" if reward.get("live") else "plat · avg")
-        unit.setObjectName("muted")
-        price.addWidget(unit, alignment=Qt.AlignmentFlag.AlignBottom)
+        if state == "priced":
+            platinum = QLabel(_format_platinum(reward.get("platinum")))
+            platinum.setObjectName("platinum")
+            platinum.setProperty("best", "true" if is_best else "false")
+            price.addWidget(platinum, alignment=Qt.AlignmentFlag.AlignBottom)
+            unit = QLabel("plat · lowest" if reward.get("live") else "plat · avg")
+            unit.setObjectName("muted")
+            price.addWidget(unit, alignment=Qt.AlignmentFlag.AlignBottom)
+        else:
+            # A dash where the platinum goes reads as "worth nothing"; these are
+            # "no price exists", which is a different thing and worth saying.
+            headline = QLabel(
+                "Not tradeable" if state == "untradeable" else "Not recognised"
+            )
+            headline.setObjectName("state")
+            price.addWidget(headline, alignment=Qt.AlignmentFlag.AlignBottom)
         price.addStretch(1)
         layout.addLayout(price)
 
@@ -107,21 +119,31 @@ class RewardCard(QFrame):
         offers = reward.get("offers") or []
         if len(offers) > 1:
             rows.append(("Next offers", "  ".join(f"{value}p" for value in offers[1:5])))
-        if not reward.get("matched") and reward.get("raw_text"):
+        state = reward.get("state") or ("priced" if reward.get("matched") else "unknown")
+        if state == "untradeable":
+            rows.append(("Why", "never listed on warframe.market"))
+        elif state == "unknown":
+            rows.append(("Why", "no catalog match — it may be untradeable or missing"))
+        # Keep the raw read on any card that is not a clean priced match, so a
+        # wrong reading can be told from an item we simply do not carry.
+        if state != "priced" and reward.get("raw_text"):
             rows.append(("Read as", reward["raw_text"]))
         if reward.get("error"):
             rows.append(("Note", reward["error"]))
         return rows
 
     def _badges(self, reward: dict[str, Any]) -> list[tuple[str, str]]:
-        if not reward.get("matched"):
-            return [("not recognised", style.active().bad)]
         palette = style.active()
+        state = reward.get("state") or ("priced" if reward.get("matched") else "unknown")
+        if state == "unknown":
+            # Muted, not alarming: a name we do not carry is an ordinary
+            # outcome, not an error the player can act on.
+            return [("not recognised", palette.warn)]
+        if state == "untradeable":
+            return [("untradeable", palette.faint)]
         badges = [("live", palette.good) if reward.get("live") else ("cached", palette.faint)]
         if reward.get("vaulted"):
             badges.append(("vaulted", palette.value))
-        if reward.get("tradeable") is False:
-            badges.append(("untradeable", palette.faint))
         if reward.get("ambiguous"):
             badges.append(("uncertain", palette.warn))
         return badges

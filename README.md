@@ -38,11 +38,18 @@ own Interface option — it decides how big the reward panel is on screen, so it
 percentage the game shows. **Client size** (S/M/L/XL, in the top bar) is this app's own window,
 and changing it scales the window and its text together.
 
-**Set your UI theme and UI Scaling in Settings** (the button in the page header), to match
-Warframe's own Interface options — same as you would in AlecaFrame. Those two settings decide which
-pixels count as reward text and how big the reward panel is, so with them set a scan is a single
-pass. Leaving the theme on *Detect automatically* makes the first scan try every theme and remember
-whichever one read, which works but is slower and can be fooled by a bad frame.
+**Set your UI background and UI Scaling in Settings** (the button in the page header), to match
+Warframe's own Interface options. Those two settings decide which pixels count as reward text and
+how big the reward panel is, so with them set a scan is a single pass.
+
+**It is the Background, not the Theme.** Warframe has both, and only one of them matters here:
+reward names are drawn on the panel backdrop and take *its* colours. The Theme setting colours the
+header and the squadmate names instead — pick that one and voidsight masks the wrong pixels and
+reads nothing, or reads your squadmates' names. A player running Theme *Zephyr* with Background
+*Vitruvian* lost an evening to this; the correct value there is `Vitruvian`.
+
+Leaving it on *Detect automatically* makes the first scan try every option and remember whichever
+one read, which works but is slower and can be fooled by a bad frame.
 
 ## What it does not do
 
@@ -113,10 +120,10 @@ game present — that is how it is developed on a machine that is not playing Wa
 
 ## Configuration
 
-`~/.config/voidsight/config.toml`, written automatically once the UI theme is worked out:
+`~/.config/voidsight/config.toml`, written automatically once the colour table is worked out:
 
 ```toml
-theme = "Vitruvian"    # your Warframe UI theme; omit to detect it
+theme = "Vitruvian"    # your Warframe *Background* (not Theme); omit to detect it
 ui_scale = 1.0         # Warframe's own UI Scaling, as a multiplier (1.0 = 100%)
 client_size = "M"      # size of this app's window: S, M, L, XL
 backend = "auto"       # auto | x11 | replay
@@ -197,7 +204,7 @@ giving up on the session, and finds it again if the game is restarted.
 ## Development
 
 ```sh
-uv run --group dev pytest      # 361 tests, no network
+uv run --group dev pytest      # 382 tests, no network
 uv run --group dev ruff check .
 ```
 
@@ -279,13 +286,10 @@ mid-mission. It hides itself after a configurable delay (default 12s, 0 keeps it
 ## Where this is going
 
 The core (2,500 lines: capture, vision, pricing, log watching) imports nothing from either front
-end, so views are cheap to add or replace. Planned, roughly in order:
-
-- **Mastery progress** — which frames and weapons are unlevelled. Warframe's public profile endpoint
-  returns XP per item and your account id is in `EE.log`, so this needs no credentials and nothing
-  unofficial.
-- **Owned counts on the reward screen** — the game already prints "2 Owned" under each reward when
-  Item Labels is on, so "do I still need this?" is answerable by reading the frame we have.
+end, so views are cheap to add or replace. The work queue — capture that reacts to the trigger
+instead of running continuously, mastery, owned counts, a tray icon, and getting this running on a
+second machine — is in [docs/roadmap.md](docs/roadmap.md). Decisions that shaped the code, and what
+would overturn each of them, are in [DESIGN.md](DESIGN.md).
 
 Knowing what you actually collected — rather than what was offered — is deliberately deferred; see
 [docs/inventory.md](docs/inventory.md) for the options, the official account API's mechanism, and

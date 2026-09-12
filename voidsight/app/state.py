@@ -14,6 +14,19 @@ from voidsight.vision.pipeline import ScanResult
 log = logging.getLogger(__name__)
 
 
+def _state(part: Any) -> str:
+    """Which of the three card states a reward is in.
+
+    "unknown" is not necessarily a misread: an untradeable item is absent from
+    warframe.market entirely, and a catalog degraded by an unreachable feed can
+    be missing hundreds of real names. Either way the raw text is still worth
+    showing, so the slot is rendered rather than dropped.
+    """
+    if part is None:
+        return "unknown"
+    return "priced" if part.tradeable else "untradeable"
+
+
 def payload_for(
     result: ScanResult,
     quotes: list[Quote],
@@ -30,6 +43,12 @@ def payload_for(
             {
                 "index": reward.index,
                 "matched": part is not None,
+                #: What kind of card this is, so a front end does not have to
+                #: re-derive it from three nullable fields:
+                #:   "priced"      — resolved and sellable, show the platinum
+                #:   "untradeable" — resolved but never listed (Forma), no price
+                #:   "unknown"     — nothing in the catalog matched the text
+                "state": _state(part),
                 "name": part.display_name if part else (reward.raw_text or "unreadable"),
                 "raw_text": reward.raw_text,
                 "score": round(reward.match.score, 1),

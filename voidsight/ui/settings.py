@@ -36,8 +36,11 @@ from voidsight.vision import theme as theme_module
 DETECT = "Detect automatically"
 
 THEME_HELP = (
-    "Match Warframe's own Interface options. The theme decides which pixels count "
-    "as reward text; UI Scaling decides how big the reward panel is on screen. "
+    "Match Warframe's own Interface options — but note this is the "
+    "<b>Background</b>, not the Theme. The reward names are drawn on the panel "
+    "backdrop and take its colours; Warframe's Theme setting colours the header "
+    "and squadmate names instead, so picking it makes voidsight mask the wrong "
+    "pixels and read nothing. UI Scaling decides how big the reward panel is. "
     "Both are the game's settings, not this app's — the window's own size lives in "
     "the top bar."
 )
@@ -103,7 +106,7 @@ class SettingsView(QWidget):
         self.theme.addItem(DETECT, userData=None)
         for entry in theme_module.THEMES:
             self.theme.addItem(entry.name, userData=entry.name)
-        form.addRow(self._label("UI theme"), self.theme)
+        form.addRow(self._label("UI background"), self.theme)
 
         self.scale = QDoubleSpinBox()
         self.scale.setRange(MIN_UI_SCALE * 100, MAX_UI_SCALE * 100)
