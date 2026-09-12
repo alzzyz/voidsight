@@ -13,3 +13,6 @@ build/
 /debug/
 /out/
 *.local.toml
+
+# personal, per-machine Claude Code settings
+.claude/settings.local.json
